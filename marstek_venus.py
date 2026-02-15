@@ -183,7 +183,7 @@ BATTERY_CONFIG = {
     "battery1": {
         "enabled":          True,
         "modbus":           True,
-        "host":             "192.168.100.201",
+        "host":             "xxx.xx.xxx.xxx",
         "port":             502,
         "unit":             1,
         "capacity_kwh":     5.6,
@@ -195,7 +195,7 @@ BATTERY_CONFIG = {
     "battery2": {
         "enabled":          True,
         "modbus":           True,
-        "host":             "192.168.100.202",
+        "host":             "xxx.xx.xxx.xxx",
         "port":             502,
         "unit":             1,
         "capacity_kwh":     5.6,
@@ -207,7 +207,7 @@ BATTERY_CONFIG = {
     "battery3": {
         "enabled":          True,
         "modbus":           True,
-        "host":             "192.168.100.203",
+        "host":             "xxx.xx.xxx.xxx",
         "port":             502,
         "unit":             1,
         "capacity_kwh":     5.6,
