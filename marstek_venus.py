@@ -1,20 +1,71 @@
-# pv_control.py
-# Dynamische Lade-/Entlade- und Stopp-Steuerung fuer mehrere Batterien
-# ASCII-only, keine Umlaute, inkl. SoC-Grenzen, Max-Limits,
-# schaltbare Detail-Logs, klare TX/RX-Fehlererkennung und Setpoint-Verifikation.
-#
-# BMS / Battery Care (restart-sicher, Persistenz in JSON):
-# - BMS darf auch ohne PV laufen (kein PV-Ueberschuss-Zwang)
-# - Wenn Batterie waehrend Zyklus schon FULL_CHARGE_SOC erreicht -> Zyklus sofort als erledigt
-# - Maximal MAX_BMS_BATTERIES_PER_DAY pro Tag
-# - Nach Voll: Hold (halten) und danach Cooldown (keine Entladung)
-#
-# WICHTIG:
-# - Dieses Script ist bewusst "monolithisch" und vollstaendig (kein apps.yaml noetig).
-# - Pfad fuer Statefile ist Addon-sicher fix (siehe BMS_STATE_FILE).
-#
-# Getestet auf AppDaemon/HA: keine fehlenden Attribute/Methoden wie _cycle_counter/_log_cycle_times.
 # -----------------------------------------------------------------------------
+# Marstek Venus – Home Assistant / AppDaemon Skript
+#
+# Beschreibung:
+# Dieses AppDaemon-Skript dient zur intelligenten Steuerung von
+# Marstek-Venus-Batteriesystemen in Home Assistant ueber Modbus.
+#
+# Der Fokus liegt auf einer stabilen, batterieschonenden Lade- und
+# Entladelogik mit klar definierten SoC-Grenzen, einem Notfall-Lademodus
+# sowie nachvollziehbarem Logging fuer den produktiven Einsatz.
+#
+# Funktionen:
+# - Dynamische Lade- und Entladesteuerung
+# - SoC-Grenzen (min / max)
+# - Notfall-Lademodus bei kritischem Ladezustand
+# - Leistungsbegrenzung fuer Laden und Entladen
+# - Modbus-Kommunikation (TCP / RTU)
+# - Optionale MQTT-Anbindung
+# - Debug- und Detail-Logging
+#
+# Voraussetzungen:
+# - Home Assistant
+# - AppDaemon (laufend)
+# - pymodbus
+# - paho-mqtt (optional)
+#
+# Autor:
+# Neue Medien Becker
+#
+# Lizenz:
+# MIT License
+# -----------------------------------------------------------------------------
+
+"""
+pv_control.py
+
+Dynamische Lade-, Entlade- und Stopp-Steuerung fuer Marstek-Venus-Batteriesysteme.
+
+Technische Merkmale:
+- ASCII-only (keine Umlaute)
+- Restart-sicheres Verhalten
+- Klare Trennung von Steuerlogik, Schutzmechanismen und Logging
+- Vollstaendig eigenstaendig lauffaehig innerhalb von AppDaemon
+
+BMS / Battery Care:
+- Betrieb auch ohne PV-Ueberschuss moeglich
+- Zyklusabbruch, wenn FULL_CHARGE_SOC bereits erreicht wurde
+- Begrenzung der maximalen Ladezyklen pro Tag
+- Haltephase nach Voll-Ladung (Hold)
+- Nachgelagerte Cooldown-Phase ohne Entladung
+
+Design-Entscheidungen:
+- Das Skript ist bewusst monolithisch aufgebaut
+- Keine externen Abhaengigkeiten zu apps.yaml notwendig
+- Persistente Statusdaten werden in einer JSON-Datei gespeichert
+- Pfade sind Add-on-sicher und restart-fest definiert
+
+Stabilitaet:
+- Getestet unter Home Assistant mit AppDaemon
+- Keine fehlenden Attribute oder internen Methoden
+- Klare TX/RX-Fehlererkennung
+- Verifikation gesetzter Sollwerte (Setpoints)
+
+Hinweis:
+Dieses Skript greift aktiv in das Energiemanagement ein und sollte vor
+dem produktiven Einsatz sorgfaeltig konfiguriert und getestet werden.
+"""
+
 
 import os
 import json
