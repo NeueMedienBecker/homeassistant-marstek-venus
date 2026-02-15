@@ -188,3 +188,24 @@ Modbus und MQTT erfolgen intern über Home Assistant
 Lizenz
 
 MIT License – freie Nutzung, Änderung und Weitergabe erlaubt.
+
+
+
+## 👤 Autor & Hinweis
+
+Dieses Projekt wurde von **Neue Medien Becker** erstellt, gepflegt und dokumentiert.
+
+Die Konzeption, Umsetzung und Dokumentation basieren auf praktischer Erfahrung aus
+realen Home-Assistant- und Energiemanagement-Installationen.
+
+---
+
+## ☕ Unterstützung
+
+Wenn dir dieses Projekt hilft und du die Weiterentwicklung unterstützen möchtest,
+freue ich mich über eine freiwillige Spende.
+
+📧 Kontakt & Spendenhinweis:  
+**info@neuemedienbecker.de**
+
+Vielen Dank für deine Unterstützung!
