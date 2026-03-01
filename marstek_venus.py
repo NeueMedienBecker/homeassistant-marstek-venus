@@ -71,15 +71,70 @@ import os
 import json
 import struct
 import time
+import random
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-
-
+from pv_control_config import *  # noqa: F403,F401
 
 
 
 # --- KONFIGURATION ----------------------------------------------------------
+# -----------------------------------------------------------------------------
+# HA-SENSOR EXPORT (alle Werte werden als sensor.* nach HA geschrieben)
+# -----------------------------------------------------------------------------
+HA_EXPORT_ENABLE = True
+HA_EXPORT_PREFIX = "marstekvenus"   # wird pro battery erweitert, z.B. marstekvenus_1_*
+HA_EXPORT_KEYS_PER_CYCLE = 4   # pro Batterie nur 4 Werte je Zyklus exportieren
+
+# Pro Batterie nur ein Index (1/2/3) fuer Namen/Prefix.
+# Kein kleinteiliges YAML pro Batterie mehr.
+BATTERY_META = {
+    "battery1": {"idx": 1},
+    "battery2": {"idx": 2},
+    "battery3": {"idx": 3},
+}
+
+# Register-Definitionen: 1x zentral, gilt fuer alle Batterien gleich
+# type: u16, s16, u32, s32
+# scale/offset/precision wie in YAML
+
+HA_REGMAP = {
+    "battery_voltage": {"addr": 32100, "cnt": 1, "type": "u16", "scale": 0.01, "unit": "V", "prec": 2, "name": "Battery Voltage"},
+    "battery_soc": {"addr": 32104, "cnt": 1, "type": "u16", "scale": 1.0, "unit": "%", "prec": 0, "name": "Battery SoC"},
+    "battery_energy": {"addr": 32105, "cnt": 1, "type": "u16", "scale": 0.0001, "unit": "kWh", "prec": 4, "name": "Battery Energy"},
+
+    "ac_power": {"addr": 32202, "cnt": 2, "type": "s32", "scale": 1.0, "unit": "W", "prec": 0, "name": "AC Power"},
+    "ac_offgrid_power": {"addr": 32302, "cnt": 2, "type": "s32", "scale": 1.0, "unit": "W", "prec": 0, "name": "AC Offgrid Power"},
+
+    "total_charging_energy": {"addr": 33000, "cnt": 2, "type": "u32", "scale": 0.01, "unit": "kWh", "prec": 4, "name": "Total Charging Energy"},
+    "total_discharging_energy": {"addr": 33002, "cnt": 2, "type": "u32", "scale": 0.01, "unit": "kWh", "prec": 4, "name": "Total Discharging Energy"},
+
+    "temp_internal": {"addr": 35000, "cnt": 1, "type": "s16", "scale": 0.1, "unit": "C", "prec": 1, "name": "Temp Internal"},
+    "temp_mos1": {"addr": 35001, "cnt": 1, "type": "s16", "scale": 0.1, "unit": "C", "prec": 1, "name": "Temp MOS1"},
+    "temp_mos2": {"addr": 35002, "cnt": 1, "type": "s16", "scale": 0.1, "unit": "C", "prec": 1, "name": "Temp MOS2"},
+    "temp_cell_max": {"addr": 35010, "cnt": 1, "type": "s16", "scale": 0.1, "unit": "C", "prec": 1, "name": "Temp Cell Max"},
+    "temp_cell_min": {"addr": 35011, "cnt": 1, "type": "s16", "scale": 0.1, "unit": "C", "prec": 1, "name": "Temp Cell Min"},
+
+    "inverter_state": {"addr": 35100, "cnt": 1, "type": "u16", "scale": 1.0, "unit": "", "prec": 0, "name": "Inverter State"},
+    "chg_v_limit": {"addr": 35110, "cnt": 1, "type": "u16", "scale": 0.1, "unit": "V", "prec": 1, "name": "Charge V Limit"},
+
+    "rs485_control": {"addr": 42000, "cnt": 1, "type": "u16", "scale": 1.0, "unit": "", "prec": 0, "name": "RS485 Control"},
+    "charge_to_soc": {"addr": 42011, "cnt": 1, "type": "u16", "scale": 1.0, "unit": "%", "prec": 0, "name": "Charge To SoC"},
+    "user_work_mode": {"addr": 43000, "cnt": 1, "type": "u16", "scale": 1.0, "unit": "", "prec": 0, "name": "User Work Mode"},
+}
+
+HA_ENTITY_ID_MAP = {
+    # total_discharging_energy soll IMMER auf _2 gehen (wie in deiner Entity Registry)
+    (1, "total_discharging_energy"): "sensor.marstekvenus_1_total_discharging_energy",
+    (2, "total_discharging_energy"): "sensor.marstekvenus_2_total_discharging_energy_2",
+    (3, "total_discharging_energy"): "sensor.marstekvenus_3_total_discharging_energy_2",
+
+    # falls charging auch _2 sein soll, dann hier ebenfalls:
+    (1, "total_charging_energy"): "sensor.marstekvenus_1_total_charging_energy_2",
+    (2, "total_charging_energy"): "sensor.marstekvenus_2_total_charging_energy_2",
+    (3, "total_charging_energy"): "sensor.marstekvenus_3_total_charging_energy_2",
+}
 
 # --- LOG TEXTE -------------------------------------------------------------
 
@@ -117,160 +172,167 @@ for k in list(LOGTXT.keys()):
     LOGTXT[k] = _ascii_safe(LOGTXT[k])
 
 
-# --- MODBUS LOGGING --------------------------------------------------------
+# --- SIGN / INTERPRETATION --------------------------------------------------
+# In deinen Logs wirkt es so:
+#   AC < 0 = DISCHARGE, AC > 0 = CHARGE
+# Wenn du aber intern "AC<0=CHARGE" erzwingen willst, dann invertiere hier.
+AC_SIGN_INVERT = False  # <-- aktuell: False passt zu deinen Logs
 
-MODBUS_LOG_OK = False      # RX OK / TX OK anzeigen
-MODBUS_LOG_TXRX = False    # TX READ / TX WRITE anzeigen
-MODBUS_LOG_ERROR = True   # RX FEHLER IMMER loggen (empfohlen: True)
-MODBUS_DEBUG = True     # Detail-Logs Modbus-Requests/Responses
+# --- DIAG LOGGING -----------------------------------------------------------
+LOG_DIAG_SIGN = True    # Loggt raw + normalized und leitet Laden/Entladen ab
+LOG_DIAG_GRID = True    # Loggt grid_flow, ac_ctrl_now, A_set und Mode-Entscheidung
 
+# --- MODBUS LOGGING ----------------------------------------------------------
+MODBUS_LOG_OK              = False   # Modbus: erfolgreiche TX/RX (Senden/Empfangen) zusaetzlich anzeigen
+MODBUS_LOG_TXRX            = False   # Modbus: jedes TX (Read/Write) als Debug ausgeben (sehr viel Log)
+MODBUS_LOG_ERROR           = False    # Modbus: Fehler immer loggen (empfohlen: True)
+MODBUS_DEBUG               = False    # Modbus: Detail-Logs Requests/Responses (nur einschalten wenn noetig)
 
+CALC_LOG                   = True    # Berechnung: Details zu Moduswahl, Verteilung und Delta (Regel-Logik)
+LOG_DISCHARGE              = True    # Entladen: Logs zu Discharge-Setpoints (wer bekommt wieviel Watt)
 
-CALC_LOG = True     # Berechnungs-Logs (Moduswahl, Verteilung, Delta)
-LOG_DISCHARGE = True     # Discharge-Setpoint-Logs
-
-# Zusaetzliche Debug-Flags
-DEBUG_STATE = True     # Gelesene Rohdaten/Interpretation pro Batterie
-DEBUG_WEIGHTS = True     # Details, welche Batterie warum teilnimmt
-DEBUG_SETPOINTS = True     # Vergleich last_distribution vs. desired/limit
-
-# Setpoint-Ausfuehrungs-Check:
-# Liest nach erfolgreich geschriebenen Setpoints AC-/Batterieleistung zurueck
-# und protokolliert, ob das Geraet den Befehl offenbar ignoriert.
-VERIFY_SETPOINT_EXEC = True     # Ein/Aus
-
-# Watt-Toleranz um Null (kein Umschalten / kein Neu-Write)
-TOLERANCE_W = 40
-INTERVAL = 10       # Abfrage-Intervall in Sekunden
-STABLE_TIMER_S = 60       # Zeit bis Mode-Wechsel (Ping-Pong-Schutz)
-
-# Modbus-Client-Parameter
-MB_TIMEOUT_S = 0.7
-MB_RETRIES = 1
-
-# --- Setpoint-Verifikation ---------------------------------
-
-VERIFY_SETPOINT_EXEC = True     # bleibt wie gehabt
-
-VERIFY_MIN_SET_W = 50          # <<< erst ab dieser Leistung ueberhaupt pruefen
-VERIFY_TOL_W = 20               # <<< Mess-Toleranz fuer AC/BP bei der Verifikation
-
-# ---------------------------------------------------------------------------
-# SOC-SAFETY (Anti-Totlaufen unter Min-SoC)
-# ---------------------------------------------------------------------------
-
-SOC_SAFETY_ENABLE = True
-
-SOC_SAFETY_MIN_SOC = 11          # unter/gleich diesem Wert aktiv
-SOC_SAFETY_TARGET_SOC = 12       # Ziel nach Schutzladung
-SOC_SAFETY_AFTER_HOURS = 48      # nach wieviel Stunden reagieren
-
-SOC_SAFETY_CHARGE_W = 400        # sehr sanft, absichtlich klein
+DEBUG_STATE                = True    # Debug: Rohdaten/Interpretation pro Batterie (SoC, AC, BP, Mode, Control)
+DEBUG_WEIGHTS              = True    # Debug: Details, welche Batterie warum teilnimmt (Gewichte/Filter)
+DEBUG_SETPOINTS            = True    # Debug: Vergleich last_distribution vs. desired/limits (Setpoint-Entscheidung)
 
 
-SOC_SAFETY_LOG_ENABLE = True     # <<< Logging EIN/AUS
-SOC_SAFETY_LOG_EVERY_CYCLE = False  # <<< wenn True: jedes Cycle loggen
+# --- BASIS-PARAMETER (Zyklus / Stabilitaet) ---------------------------------
+TOLERANCE_W                = 40      # Toleranz um 0W: innerhalb +/-40W keine aggressiven Aenderungen (Anti-Zappeln)
+INTERVAL                   = 20      # Zykluszeit in Sekunden: wie oft gelesen/geregelt wird
+STABLE_TIMER_S             = 20      # Mindestzeit stabil, bevor Moduswechsel erlaubt ist (Ping-Pong-Schutz)
 
 
-# ---------------------------------------------------------------------------
-# LOG RETENTION
-# ---------------------------------------------------------------------------
-
-LOG_RETENTION_DAYS = 365   # <<< HIER EINSTELLEN (z.B. 30, 90, 365)
-LOG_CLEANUP_PATH = "/config/appdaemon/logs"
-LOG_CLEANUP_GLOB = ".log"   # nur *.log anfassen
-LOG_CLEANUP_RUN_EVERY_H = 3650  # wie oft aufraeumen (Stunden)
-
-# --- PV Surplus Zeitfilter (Anti-Wolken-PingPong) ---------------------------
-
-PV_SURPLUS_MIN_TIME = 30   # Sekunden stabiler PV-Ueberschuss noetig
-SOC_SAFETY_REQUIRE_PV = False   # NEU: Schutzladung nur bei PV-Ueberschuss
-# ---------------------------------------------------------------------------
-# BMS / BATTERY CARE
-# ---------------------------------------------------------------------------
-
-ENABLE_BMS_CARE = True
-
-PV_CHARGE_ALLOW_W = -150   # < -150W = PV-Ueberschuss
+# --- MODBUS CLIENT PARAMETER -------------------------------------------------
+MB_TIMEOUT_S               = 3     # Modbus Timeout in Sekunden (wie lange auf Antwort gewartet wird)
+MB_RETRIES                 = 1       # Modbus Wiederholungen bei Fehler (0..2 sinnvoll, zu hoch macht Last)
 
 
-FULL_CHARGE_SOC = 99          # Ziel-SoC fuer BMS-Pflege (Balancing)
-# Abstand pro Batterie (Empfehlung 7-14 Tage)
-FULL_CHARGE_INTERVAL_DAYS = 10
-FULL_CHARGE_MIN_HOLD_S = 45 * 60     # 45 Minuten auf voll halten
-ALLOW_DISCHARGE_AFTER_S = 30 * 60     # 30 Minuten danach keine Entladung
+# --- SETPOINT VERIFIKATION (Pruefen ob Geraet reagiert) ----------------------
+VERIFY_SETPOINT_EXEC       = False    # Verifikation aktiv: nach Setpoint pruefen ob Leistung sichtbar ist
+VERIFY_MIN_SET_W           = 50      # Verifikation erst ab dieser Leistung (unter 50W ist Messung ungenau)
+VERIFY_TOL_W               = 20      # Verifikations-Toleranz: +/-20W gelten noch als "ok" (Messrauschen)
 
-MAX_BMS_BATTERIES_PER_DAY = 1
-# sanfte Leistung fuer Volladung (unter MaxCharge)
-BMS_FORCE_CHARGE_W = 1200
 
-# Persistenz-Datei (Addon-sicherer Pfad)
-BMS_STATE_FILE = "/config/appdaemon/data/pv_control_bms_state.json"
+# --- SOC-SAFETY (Anti-Totlaufen unter Min-SoC) -------------------------------
+SOC_SAFETY_ENABLE          = True    # SoC-Schutz aktiv: verhindert tiefes Entladen unter Minimal-SoC
+SOC_SAFETY_MIN_SOC         = 11      # Schutz aktiv bei SoC <= 11% (darunter wird Entladen verhindert)
+SOC_SAFETY_TARGET_SOC      = 12      # Schutz-Ziel: bis SoC 12% sanft nachladen, dann wieder normal
+SOC_SAFETY_AFTER_HOURS     = 48      # Erst reagieren, wenn SoC lange niedrig ist (z.B. 48 Stunden)
+SOC_SAFETY_CHARGE_W        = 400     # Schutz-Ladeleistung (W): absichtlich klein und batterieschonend
 
-# Control-Register (42000)
-CONTROL_ENABLE_CANDIDATES = [21930, 21931]
-CONTROL_ENABLED_VALUES = set(CONTROL_ENABLE_CANDIDATES)
-CONTROL_DISABLED_VALUES = {21947, 0}
+SOC_SAFETY_LOG_ENABLE      = True    # SoC-Schutz Logging global ein/aus
+SOC_SAFETY_LOG_EVERY_CYCLE = False   # Wenn True: jeden Zyklus loggen (sonst nur Ereignisse)
 
-# Smartmeter (via HA Entity)
+
+# --- LOG RETENTION (Logfiles aufraeumen) -------------------------------------
+LOG_RETENTION_DAYS         = 365     # Logs behalten: nach X Tagen loeschen (z.B. 30/90/365)
+LOG_CLEANUP_PATH           = "/config/appdaemon/logs"   # Pfad der AppDaemon Logs
+LOG_CLEANUP_GLOB           = ".log"  # Nur Dateien mit dieser Endung anfassen (z.B. ".log")
+LOG_CLEANUP_RUN_EVERY_H    = 3650    # Aufraeumen alle X Stunden (3650h ~ ca. 5 Monate)
+
+
+# --- PV SURPLUS ZEITFILTER (Anti-Wolken-PingPong) ----------------------------
+PV_SURPLUS_MIN_TIME        = 20      # PV-Ueberschuss muss X Sekunden stabil sein, bevor geladen wird
+SOC_SAFETY_REQUIRE_PV      = False   # Wenn True: Schutzladung (SOC-SAFETY) nur bei PV-Ueberschuss
+
+
+# --- GRID-FOLLOW (Stop/Deadband Stabilisierung) ------------------------------
+GRID_DEADBAND_W            = 60      # Deadband um 0W Netzfluss: innerhalb +/-60W keine Nachregelung (Ruhezone)
+GRID_STOP_AFTER_S          = 120     # Stop nach X Sekunden ohne Wirkung: wenn Setpoints nichts bewirken -> auf 0
+
+
+# --- PV CHARGE DISTRIBUTION (Bucket-Logik fuer kleine PV-Leistungen) ---------
+PV_BUCKET_ENABLE           = True    # Bucket-Logik aktiv: bei wenig PV nicht alle Batterien gleichzeitig laden
+PV_BUCKET_1_TOTAL_W        = 300     # Unter 300W Gesamt-Target: nur 1 Batterie aktiv laden
+PV_BUCKET_2_TOTAL_W        = 900     # Unter 900W Gesamt-Target: max. 2 Batterien aktiv laden (sonst alle)
+PV_MIN_PER_BAT_W           = 150     # Mindestleistung pro aktiver Batterie, damit Marstek "anspringt"
+
+PV_ROTATE_ENABLE           = True    # Rotation aktiv: bei Bucket 1/2 wechselnde Batterie(n), gleichmaessige Nutzung
+PV_ROTATE_MODE             = "cycle" # Rotation: "cycle" = pro Zyklus rotieren, "daily" = einmal pro Tag
+
+
+# --- BMS / BATTERY CARE (Voll-Ladung fuer Balancing / Pflege) ----------------
+ENABLE_BMS_CARE            = True    # BMS-Pflege aktiv: gelegentliche Voll-Ladung fuer Balancing
+PV_CHARGE_ALLOW_W          = -100    # PV-Ueberschuss-Schwelle: Netzfluss <= -100W gilt als "PV vorhanden"
+FULL_CHARGE_SOC            = 99      # Voll-Lade-Ziel: bis SoC 99% (Balancing)
+FULL_CHARGE_INTERVAL_DAYS  = 10      # Alle X Tage pro Batterie eine Voll-Ladung (Empfehlung 7..14)
+FULL_CHARGE_MIN_HOLD_S     = 45*60   # Nach Voll-Ladung X Sekunden halten (z.B. 45 Minuten)
+ALLOW_DISCHARGE_AFTER_S    = 30*60   # Nach Voll-Ladung X Sekunden nicht entladen (Cooldown/Schonung)
+
+MAX_BMS_BATTERIES_PER_DAY  = 1       # Pro Tag maximal X Batterien fuer BMS-Pflege voll laden
+BMS_FORCE_CHARGE_W         = 1200    # Pflege-Ladeleistung (W): unter max_charge, sanft
+
+BMS_STATE_FILE             = "/config/appdaemon/data/pv_control_bms_state.json"   # Persistenter BMS-Status (JSON)
+
+
+# --- CONTROL / ENABLE STATES -------------------------------------------------
+CONTROL_ENABLE_CANDIDATES  = [21930, 21931]   # Werte, die "Steuerung aktiv" bedeuten koennen (je nach Firmware)
+CONTROL_ENABLED_VALUES     = set(CONTROL_ENABLE_CANDIDATES)   # Set fuer schnellen Check: ist Control aktiv?
+CONTROL_DISABLED_VALUES    = {21947, 0}       # Werte, die "Steuerung aus" bedeuten (Setpoints werden ignoriert)
+
+
+# --- SMARTMETER (Home Assistant Entity) --------------------------------------
 POWER_SENSOR = {
-    "enabled": True,
-    "entity":  "sensor.stromzaehler_sml_aktuelle_wirkleistung"
+    "enabled": True,                                              # Smartmeter aktiv: Netzleistung aus HA lesen
+    "entity":  "sensor.stromzaehler_sml_aktuelle_wirkleistung"     # Entity: aktuelle Wirkleistung (W)
 }
 
-# Modbus-Register
+
+# Modbus-Register (Adressen im Marstek/Venus Modbus-Registerplan; werden per read_holding_registers gelesen)
+
 REGISTERS = {
-    "soc":            32104,
-    "battery_power":  (32102, 2),   # signed 32-bit
-    "control":        42000,
-    "mode":           42010,        # 0=stop, 1=charge, 2=discharge
-    "charge_set":     42020,        # W
-    "discharge_set":  42021,        # W
-    "ac_power":       (32202, 2),   # signed 32-bit (AC out/in)
+    "soc":            32104,     							 						# SoC (State of Charge) in %: Ladezustand der Batterie, z.B. 55 = 55%.
+    "battery_power":  (32102, 2), 													# Batterie-Leistung als signed 32-bit (2 Register): + = Batterie wird geladen, - = Batterie entlaedt.
+    "control":        42000,      													# Freigabe/Steuerstatus (Control-Word): muss auf "enabled" stehen, sonst ignoriert das Geraet Setpoints.
+    "mode":           42010,      													# Betriebsmodus: 0=STOP (keine Regelung), 1=CHARGE (Laden), 2=DISCHARGE (Entladen).
+    "charge_set":     42020,      													# Lade-Sollwert in Watt: wie stark das Geraet laden soll (nur wirksam bei mode=1).
+    "discharge_set":  42021,      													# Entlade-Sollwert in Watt: wie stark das Geraet entladen soll (nur wirksam bei mode=2).
+    "ac_power":       (32202, 2), 													# AC-Leistung als signed 32-bit (2 Register): Leistung am AC-Port; je nach Geraet positiv/negativ (wird im Script normalisiert).
 }
 
-# Batterie-Konfiguration
+# Batterie-Konfiguration (pro Batterie ein Block; mehrere Systeme koennen parallel geregelt werden)
 BATTERY_CONFIG = {
     "battery1": {
-        "enabled":          True,
-        "modbus":           True,
-        "host":             "xxx.xx.xxx.xxx",
-        "port":             502,
-        "unit":             1,
-        "capacity_kwh":     5.6,
-        "max_charge_w":     2500,
-        "max_discharge_w":  2500,
-        "min_soc":          11,
-        "max_soc":          99
+        "enabled":          True,            										# Batterie im Script aktivieren/deaktivieren (False = komplett ignorieren).
+        "modbus":           True,            										# Modbus-Nutzung aktiv (False = Batterie wird nicht per Modbus gelesen/geschrieben).
+        "host":             "192.168.100.201",										# IP-Adresse des Modbus-TCP Gateways/der Batterie im Netzwerk.
+        "port":             502,             										# TCP-Port fuer Modbus (Standard: 502).
+        "unit":             1,               										# Modbus Unit-ID (Slave-ID); bei TCP meist 1, kann je nach Geraet abweichen.
+        "capacity_kwh":     5.6,             										# Kapazitaet in kWh; wird fuer die Leistungsverteilung (Gewichtung) genutzt.
+        "max_charge_w":     2500,            										# Max. Ladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "max_discharge_w":  2500,            										# Max. Entladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "min_soc":          11,              										# Untere SoC-Grenze in %: darunter/gleich wird Entladen gestoppt (Batterieschutz).
+        "max_soc":          99               										# Obere SoC-Grenze in %: ab hier wird Laden gestoppt (Batterieschutz/BMS-Logik).
     },
     "battery2": {
-        "enabled":          True,
-        "modbus":           True,
-        "host":             "xxx.xx.xxx.xxx",
-        "port":             502,
-        "unit":             1,
-        "capacity_kwh":     5.6,
-        "max_charge_w":     2500,
-        "max_discharge_w":  2500,
-        "min_soc":          11,
-        "max_soc":          99
+        "enabled":          True,            										# Batterie im Script aktivieren/deaktivieren (False = komplett ignorieren).
+        "modbus":           True,            										# Modbus-Nutzung aktiv (False = Batterie wird nicht per Modbus gelesen/geschrieben).
+        "host":             "192.168.100.202",										# IP-Adresse des Modbus-TCP Gateways/der Batterie im Netzwerk.
+        "port":             502,             										# TCP-Port fuer Modbus (Standard: 502).
+        "unit":             1,               										# Modbus Unit-ID (Slave-ID); bei TCP meist 1, kann je nach Geraet abweichen.
+        "capacity_kwh":     5.6,             										# Kapazitaet in kWh; wird fuer die Leistungsverteilung (Gewichtung) genutzt.
+        "max_charge_w":     2500,            										# Max. Ladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "max_discharge_w":  2500,            										# Max. Entladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "min_soc":          11,              										# Untere SoC-Grenze in %: darunter/gleich wird Entladen gestoppt (Batterieschutz).
+        "max_soc":          99               										# Obere SoC-Grenze in %: ab hier wird Laden gestoppt (Batterieschutz/BMS-Logik).
     },
     "battery3": {
-        "enabled":          True,
-        "modbus":           True,
-        "host":             "xxx.xx.xxx.xxx",
-        "port":             502,
-        "unit":             1,
-        "capacity_kwh":     5.6,
-        "max_charge_w":     2500,
-        "max_discharge_w":  2500,
-        "min_soc":          11,
-        "max_soc":          99
+        "enabled":          True,            										# Batterie im Script aktivieren/deaktivieren (False = komplett ignorieren).
+        "modbus":           True,            										# Modbus-Nutzung aktiv (False = Batterie wird nicht per Modbus gelesen/geschrieben).
+        "host":             "192.168.100.203",										# IP-Adresse des Modbus-TCP Gateways/der Batterie im Netzwerk.
+        "port":             502,             										# TCP-Port fuer Modbus (Standard: 502).
+        "unit":             1,               										# Modbus Unit-ID (Slave-ID); bei TCP meist 1, kann je nach Geraet abweichen.
+        "capacity_kwh":     5.6,             										# Kapazitaet in kWh; wird fuer die Leistungsverteilung (Gewichtung) genutzt.
+        "max_charge_w":     2500,            										# Max. Ladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "max_discharge_w":  2500,            										# Max. Entladeleistung in Watt; Script setzt niemals hoeher als diesen Wert.
+        "min_soc":          11,              										# Untere SoC-Grenze in %: darunter/gleich wird Entladen gestoppt (Batterieschutz).
+        "max_soc":          99               										# Obere SoC-Grenze in %: ab hier wird Laden gestoppt (Batterieschutz/BMS-Logik).
     },
 }
 
+
 COLUMNS = [
-    "bat", "soc", "bp", "ac", "zustand",
+    "bat", "soc",  "ac", "zustand",
     "ctrl", "mode",
     "last", "soll",
     "maxch", "maxdis", "minsoc", "maxsoc",
@@ -279,7 +341,7 @@ COLUMNS = [
 
 
 HEADERS = [
-    "Bat", "SoC", "BP(W)", "AC(W)", "Zustand",
+    "Bat", "SoC",  "AC(W)", "Zustand",
     "Ctrl", "Mode",
     "Last", "Soll",
     "MxCh", "MxDs", "MinSoC", "MaxSoC",
@@ -287,7 +349,7 @@ HEADERS = [
 ]
 
 COL_WIDTH = {
-    "bat": 5, "soc": 5, "bp": 7, "ac": 7,
+    "bat": 5, "soc": 5,  "ac": 7,
     "zustand": 18,      # war 12 -> reicht jetzt fuer "Laden - BMS aktiv"
     "ctrl": 6, "mode": 5,
     "last": 6, "soll": 6,
@@ -313,7 +375,6 @@ def _i32_from_u16_be(words):
         return 0
     return struct.unpack(">i", struct.pack(">HH", words[0], words[1]))[0]
 
-
 def _mb_client(host, port):
     """Erstellt einen ModbusTcpClient mit kurzen Timeouts und wenig Retries."""
     try:
@@ -321,27 +382,23 @@ def _mb_client(host, port):
     except TypeError:
         return ModbusTcpClient(host, port=port, timeout=MB_TIMEOUT_S)
 
+def _u32_from_u16_be(words):
+    if not words or len(words) != 2:
+        return 0
+    return struct.unpack(">I", struct.pack(">HH", words[0], words[1]))[0]
+
+def _s16_from_u16(word):
+    # uint16 -> int16
+    return struct.unpack(">h", struct.pack(">H", int(word) & 0xFFFF))[0]
 
 def _modbus_read_generic(client, unit, addr, count, log, name):
-    """
-    Gelesene Register mit TX/RX-Log und Rueckmeldung.
-    Rueckgabe:
-      - list[int] bei Erfolg
-      - None bei Fehler
-    """
     prefix = f"[{name}] " if name else ""
 
     if MODBUS_LOG_TXRX:
-        log(f"{prefix}[TX READ] addr={addr} cnt={count} unit={unit}")
+        log(f"{prefix}[TX READ] addr={addr} cnt={count} device_id={unit}")
 
     try:
-        try:
-            rr = client.read_holding_registers(address=addr, count=count, slave=unit)
-        except TypeError:
-            try:
-                rr = client.read_holding_registers(address=addr, count=count, unit=unit)
-            except TypeError:
-                rr = client.read_holding_registers(address=addr, count=count)
+        rr = client.read_holding_registers(addr, count=count, device_id=unit)
 
         if rr is None:
             if MODBUS_LOG_ERROR:
@@ -350,7 +407,9 @@ def _modbus_read_generic(client, unit, addr, count, log, name):
 
         if hasattr(rr, "isError") and rr.isError():
             if MODBUS_LOG_ERROR:
-                log(f"{prefix}[RX FEHLER] {rr}")
+                exc = getattr(rr, "exception_code", None)
+                fcode = getattr(rr, "function_code", None)
+                log(f"{prefix}[RX FEHLER] isError={rr} exc={exc} fcode={fcode}")
             return None
 
         regs = getattr(rr, "registers", None)
@@ -362,6 +421,7 @@ def _modbus_read_generic(client, unit, addr, count, log, name):
         if MODBUS_LOG_OK:
             log(f"{prefix}[RX OK] {regs}")
 
+        time.sleep(0.03)  # etwas mehr Luft als 0.02
         return regs
 
     except Exception as e:
@@ -371,26 +431,14 @@ def _modbus_read_generic(client, unit, addr, count, log, name):
 
 
 def _modbus_write_generic(client, unit, addr, value, log, name):
-    """
-    Write mit TX/RX-Log und Rueckmeldung.
-    Rueckgabe:
-      - True bei Erfolg
-      - False bei Fehler
-    """
     prefix = f"[{name}] " if name else ""
     v = int(value)
 
     if MODBUS_LOG_TXRX:
-        log(f"{prefix}[TX WRITE] addr={addr} val={v} unit={unit}")
+        log(f"{prefix}[TX WRITE] addr={addr} val={v} device_id={unit}")
 
     try:
-        try:
-            wr = client.write_register(address=addr, value=v, slave=unit)
-        except TypeError:
-            try:
-                wr = client.write_register(address=addr, value=v, unit=unit)
-            except TypeError:
-                wr = client.write_register(address=addr, value=v)
+        wr = client.write_register(addr, v, device_id=unit)
 
         if wr is None:
             if MODBUS_LOG_ERROR:
@@ -405,6 +453,7 @@ def _modbus_write_generic(client, unit, addr, value, log, name):
         if MODBUS_LOG_OK:
             log(f"{prefix}[RX OK]")
 
+        time.sleep(0.03)
         return True
 
     except Exception as e:
@@ -422,6 +471,149 @@ class PVControlApp(Hass):
 
     # ------------------------- Init ----------------------------------------
 
+    
+    def _ha_entity(self, battery_name, key):
+        idx = int(BATTERY_META.get(battery_name, {}).get("idx", 0) or 0)
+    
+        forced = HA_ENTITY_ID_MAP.get((idx, key))
+        if forced:
+            return forced
+    
+        return f"sensor.{HA_EXPORT_PREFIX}_{idx}_{key}" if idx else f"sensor.{HA_EXPORT_PREFIX}_{battery_name}_{key}"
+    
+    def _set_ha_sensor(self, entity_id, value, unit="", attrs=None):
+        if not HA_EXPORT_ENABLE:
+            return
+    
+        # HA akzeptiert keinen None/NaN/Inf als state
+        if value is None:
+            return
+        try:
+            if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+                return
+        except Exception:
+            return
+    
+        try:
+            a = dict(attrs or {})
+    
+            # Einheit setzen
+            if unit:
+                a["unit_of_measurement"] = str(unit)
+    
+            # ---- ENERGY META fuer kWh ----
+            # Damit Home Assistant es als Energie erkennt (Energy Dashboard / Statistics)
+            if str(unit).lower() == "kwh":
+                a["device_class"] = "energy"
+                a["state_class"] = "total_increasing"
+    
+            # state IMMER als STRING, aber numerisch formatiert (kein "kWh" im state!)
+            if isinstance(value, (int, float)):
+                state = str(value)
+            else:
+                # Falls doch mal String reinkommt
+                state = str(value).strip()
+    
+            self.set_state(entity_id, state=state, attributes=a)
+    
+        except Exception as e:
+            self.error(f"HA-EXPORT: set_state failed for {entity_id}: {e}")
+
+    def _read_reg_value(self, client, unit, spec, name):
+        addr = int(spec["addr"])
+        cnt  = int(spec.get("cnt", 1))
+        typ  = str(spec.get("type", "u16"))
+    
+        regs = self._modbus_read(client, unit, addr, cnt, name)
+        if regs is None:
+            return None
+    
+        if typ == "u16":
+            return int(regs[0])
+        if typ == "s16":
+            return int(_s16_from_u16(regs[0]))
+        if typ == "u32":
+            return int(_u32_from_u16_be(regs[:2]))
+        if typ == "s32":
+            return int(_i32_from_u16_be(regs[:2]))
+    
+        return None
+    
+    def _poll_and_export_ha_sensors(self, battery_name, cfg):
+        if not HA_EXPORT_ENABLE:
+            return
+    
+        # Backoff beruecksichtigen (damit Export nicht extra Last erzeugt)
+        now_ts = float(self._now_epoch or time.time())
+        if now_ts < float(self._mb_backoff_until.get(battery_name, 0) or 0):
+            return
+    
+        client = _mb_client(cfg["host"], cfg["port"])
+        if not client.connect():
+            self._mb_backoff_until[battery_name] = time.time() + 30
+            return
+    
+        try:
+            # ---- CHUNKED EXPORT: pro Zyklus nur X Keys ----
+            keys = list(HA_REGMAP.keys())
+            
+            prio = ["battery_soc", "total_charging_energy", "total_discharging_energy"]
+            keys = [k for k in prio if k in keys] + [k for k in keys if k not in prio]
+    
+            pos_key = f"_ha_export_pos_{battery_name}"
+            pos = int(getattr(self, pos_key, 0) or 0)
+    
+            chunk = keys[pos:pos + HA_EXPORT_KEYS_PER_CYCLE]
+            if not chunk:
+                pos = 0
+                chunk = keys[:HA_EXPORT_KEYS_PER_CYCLE]
+    
+            setattr(self, pos_key, (pos + HA_EXPORT_KEYS_PER_CYCLE) % max(1, len(keys)))
+    
+            for key in chunk:
+                spec = HA_REGMAP[key]
+    
+                raw = self._read_reg_value(client, cfg["unit"], spec, battery_name)
+                if raw is None:
+                    # leichter Backoff, damit nicht jede Sekunde wieder knallt
+                    self._mb_backoff_until[battery_name] = time.time() + 10
+                    continue
+    
+                scale = float(spec.get("scale", 1.0))
+                offset = float(spec.get("offset", 0.0))
+                prec = int(spec.get("prec", 0))
+                unit = str(spec.get("unit", ""))
+    
+                val = (raw * scale) + offset
+                if prec >= 0:
+                    val = round(val, prec)
+    
+                ent = self._ha_entity(battery_name, key)
+                
+                friendly = f"MarstekVenus {BATTERY_META[battery_name]['idx']} {spec.get('name', key.replace('_',' ').title())}"
+                
+                self._set_ha_sensor(
+                    ent,
+                    val,
+                    unit=unit,
+                    attrs={
+                        "friendly_name": friendly,
+                        "source": "appdaemon_pv_control",
+                        "reg": int(spec["addr"]),
+                        "type": str(spec.get("type")),
+                    },
+                )
+                    
+                friendly = f"MarstekVenus {BATTERY_META[battery_name]['idx']} {spec.get('name', key.replace('_',' ').title())}"
+                
+
+        finally:
+            try:
+                client.close()
+            except Exception:
+                pass
+
+
     def initialize(self):
         # aktive Batterien
         self.batteries = {
@@ -436,6 +628,7 @@ class PVControlApp(Hass):
 
         # PV-Surplus Zeitfilter
         self._pv_ok_since = None
+        self._grid_zero_since = None
 
 
         self._cycle_last_epoch = 0.0
@@ -467,12 +660,25 @@ class PVControlApp(Hass):
 
         self._bms_state_path = BMS_STATE_FILE
         self._load_bms_state()
+        
+        # PV-Rotation State (persistiert in BMS_STATE_FILE)
+        self.pv_rotate = {
+            "order": list(self.batteries.keys()),  # Reihenfolge der Batterien
+            "idx": 0,                              # aktueller Start-Index
+            "day": datetime.now().strftime("%Y-%m-%d"),
+        }
+        self._load_pv_rotate_state()
 
         # 🔥 HIER ist der entscheidende Teil
         self.log(
             f"Starte PVControlApp, INTERVAL={INTERVAL}s, BMS_CARE={'ON' if ENABLE_BMS_CARE else 'OFF'}")
         self._log_bms_schedule()
 
+    
+        # Backoff: nach Fehlern Batterie fuer X Sekunden nicht anfassen
+        self._mb_backoff_until = {name: 0.0 for name in self.batteries}
+        
+        
         # PV-Regel-Loop
         self.run_every(self.read_and_log, self.datetime(), INTERVAL)
 
@@ -482,6 +688,74 @@ class PVControlApp(Hass):
             self.datetime(),
             int(LOG_CLEANUP_RUN_EVERY_H) * 3600
         )
+
+
+    def _select_pv_charge_subset(self, target_w, states_no_bms):
+        """
+        Waehlt, welche Batterien beim PV-Laden (non-BMS) teilnehmen.
+        - Beruecksichtigt Buckets: 1 Batterie / 2 Batterien / alle
+        - Beruecksichtigt PV_MIN_PER_BAT_W, damit Setpoints nicht zu klein werden
+        - Rotation/Persistenz, damit nicht immer dieselbe Batterie geladen wird
+    
+        WICHTIG:
+        - states_no_bms enthaelt schon NICHT: BMS-active und NICHT: SOC-SAFETY-active
+        - Also stoeren wir diese niemals.
+        """
+        bats = list(states_no_bms.keys())
+        if not bats:
+            return []
+    
+        # Buckets nur wenn aktiviert
+        if not PV_BUCKET_ENABLE:
+            return bats
+    
+        # Wie viele Batterien duerfen max. aktiv sein?
+        if target_w < PV_BUCKET_1_TOTAL_W:
+            wanted = 1
+        elif target_w < PV_BUCKET_2_TOTAL_W:
+            wanted = 2
+        else:
+            wanted = len(bats)
+    
+        # Mindestleistung pro Batterie beachten:
+        # z.B. target=250W und wanted=2 geht nicht sinnvoll -> runter auf 1
+        if PV_MIN_PER_BAT_W > 0:
+            max_possible = max(1, int(target_w // PV_MIN_PER_BAT_W))
+            wanted = min(wanted, max_possible)
+    
+        wanted = max(1, min(wanted, len(bats)))
+    
+        # Rotation vorbereiten
+        self._pv_rotate_maybe_refresh()
+        order = self.pv_rotate.get("order") or list(self.batteries.keys())
+        idx = int(self.pv_rotate.get("idx", 0))
+    
+        # Nur Batterien nehmen, die in states_no_bms enthalten sind (eligible)
+        order = [x for x in order if x in states_no_bms]
+        if not order:
+            order = bats
+    
+        # Startpunkt je nach Rotation
+        if PV_ROTATE_ENABLE:
+            rotated = order[idx:] + order[:idx]
+        else:
+            rotated = order
+    
+        # Zusatzlogik: bei Auswahl 1/2 sollen bevorzugt niedrigere SoC drankommen,
+        # aber Rotation sorgt dafuer, dass gleiche SoCs nicht immer dieselbe Batterie treffen.
+        rotated_sorted = sorted(
+            rotated,
+            key=lambda n: (int(states_no_bms[n].get("soc", 0)), rotated.index(n))
+        )
+    
+        subset = rotated_sorted[:wanted]
+    
+        # Bei cycle-Rotation: nach Nutzung weiterdrehen (nur wenn nicht "alle")
+        if PV_ROTATE_ENABLE and PV_ROTATE_MODE == "cycle" and wanted < len(bats):
+            self._pv_rotate_step()
+    
+        return subset
+
 
     # ------------------------- Logging Helpers -----------------------------
 
@@ -660,6 +934,104 @@ class PVControlApp(Hass):
                 return True
         return False
 
+
+    # ------------------------- Persistenz (PV-Rotation) ---------------------
+
+    def _load_pv_rotate_state(self):
+        """
+        Laedt PV-Rotation aus derselben JSON-Datei wie BMS_STATE_FILE.
+        Wenn nichts vorhanden: Defaults nutzen.
+        """
+        path = self._bms_state_path
+        if not os.path.exists(path):
+            return
+
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+
+            pv = data.get("pv_rotate", None)
+            if not isinstance(pv, dict):
+                return
+
+            order = pv.get("order", None)
+            idx = pv.get("idx", 0)
+            day = pv.get("day", None)
+
+            bats = list(self.batteries.keys())
+
+            # Order muss zu aktuellen Batterien passen
+            if isinstance(order, list):
+                order = [x for x in order if x in bats]
+                for x in bats:
+                    if x not in order:
+                        order.append(x)
+            else:
+                order = bats
+
+            if not order:
+                order = bats
+
+            self.pv_rotate["order"] = order
+            self.pv_rotate["idx"] = int(idx or 0) % max(1, len(order))
+            if day:
+                self.pv_rotate["day"] = str(day)
+
+        except Exception:
+            # keine harte Abhaengigkeit
+            return
+
+    def _save_pv_rotate_state(self):
+        """
+        Schreibt pv_rotate in dieselbe JSON-Datei (BMS_STATE_FILE).
+        Robust: bestehende Struktur bleibt erhalten.
+        """
+        path = self._bms_state_path
+        try:
+            data = {}
+            if os.path.exists(path):
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f) or {}
+
+            data["pv_rotate"] = self.pv_rotate
+
+            tmp = path + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=True, indent=2)
+            os.replace(tmp, path)
+        except Exception:
+            return
+
+    def _pv_rotate_maybe_refresh(self):
+        """
+        Rotation ggf. taeglich neu mischen (wenn PV_ROTATE_MODE='daily').
+        """
+        if not PV_ROTATE_ENABLE:
+            return
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if PV_ROTATE_MODE == "daily" and self.pv_rotate.get("day") != today:
+            order = list(self.batteries.keys())
+            random.shuffle(order)
+            self.pv_rotate = {"order": order, "idx": 0, "day": today}
+            self._save_pv_rotate_state()
+
+    def _pv_rotate_step(self):
+        """
+        Rotation einen Schritt weiterdrehen (wenn PV_ROTATE_MODE='cycle').
+        """
+        if not PV_ROTATE_ENABLE:
+            return
+
+        order = self.pv_rotate.get("order") or list(self.batteries.keys())
+        if not order:
+            return
+
+        self.pv_rotate["idx"] = (int(self.pv_rotate.get("idx", 0)) + 1) % len(order)
+        self._save_pv_rotate_state()
+
+
+
     # ------------------------- Log Cleanup ---------------------------------
 
     def _cleanup_old_logs(self, kwargs=None):
@@ -763,22 +1135,23 @@ class PVControlApp(Hass):
         return last + (FULL_CHARGE_INTERVAL_DAYS * 86400)
 
     def _log_bms_schedule(self):
-        """Protokolliert pro Batterie: letzter Zyklus, naechster Zyklus, Status/Timer."""
+        """Protokolliert pro Batterie: letzter Zyklus, naechster Zyklus, Status/Timer (Deutsch)."""
         if not ENABLE_BMS_CARE:
             return
-
+    
         now_ts = float(self._now_epoch or time.time())
-        self.log("BMS-SCHEDULE: last cycle / next due / status (hold/cooldown)")
-
+        self.log("BMS-ZEITPLAN: Letzter Zyklus / Naechste Faelligkeit / Status (Hold/Cooldown)")
+    
         for name in self.batteries.keys():
             bms = self.bms_state.get(name, {})
             phase = bms.get("phase", "idle")
             last_ts = float(bms.get("last_full_ts") or 0)
-
+    
             next_ts = self._bms_next_due_ts(name)
             hold_until = float(bms.get("holding_until") or 0)
             cool_until = float(bms.get("cooldown_until") or 0)
-
+    
+            # --- Naechste Faelligkeit ---
             if next_ts > 0:
                 rem_s = int(next_ts - now_ts)
                 if rem_s <= 0:
@@ -786,23 +1159,38 @@ class PVControlApp(Hass):
                 else:
                     next_info = f"{self._fmt_ts(next_ts)} (in {self._fmt_dh(rem_s)})"
             else:
-                next_info = "sofort moeglich (kein last_full_ts)"
-
-            hold_info = "-"
+                next_info = "sofort moeglich (kein letzter Zyklus gespeichert)"
+    
+            # --- Hold ---
             if hold_until > now_ts:
-                hold_info = f"bis {self._fmt_ts(hold_until)} ({int(hold_until - now_ts)}s)"
+                hold_info = f"aktiv bis {self._fmt_ts(hold_until)} ({self._fmt_dh(int(hold_until - now_ts))})"
             elif hold_until > 0:
-                hold_info = f"beendet {self._fmt_ts(hold_until)}"
-
-            cool_info = "-"
+                hold_info = f"beendet am {self._fmt_ts(hold_until)}"
+            else:
+                hold_info = "kein Hold aktiv"
+    
+            # --- Cooldown ---
             if cool_until > now_ts:
-                cool_info = f"bis {self._fmt_ts(cool_until)} ({int(cool_until - now_ts)}s)"
+                cool_info = f"aktiv bis {self._fmt_ts(cool_until)} ({self._fmt_dh(int(cool_until - now_ts))})"
             elif cool_until > 0:
-                cool_info = f"beendet {self._fmt_ts(cool_until)}"
-
+                cool_info = f"beendet am {self._fmt_ts(cool_until)}"
+            else:
+                cool_info = "kein Cooldown aktiv"
+    
+            # --- Phase deutsch ---
+            phase_de = {
+                "idle": "Bereitschaft",
+                "charging": "Volladung aktiv",
+                "hold": "Voll geladen (Haltephase)"
+            }.get(phase, phase)
+    
             self.log(
-                f"BMS {name}: last={self._fmt_ts(last_ts)} | next={next_info} | "
-                f"phase={phase} | hold={hold_info} | cooldown={cool_info}"
+                f"BMS {name}: "
+                f"Letzte Voll-Ladung: {self._fmt_ts(last_ts)} | "
+                f"Naechste Faelligkeit: {next_info} | "
+                f"Phase: {phase_de} | "
+                f"Hold: {hold_info} | "
+                f"Cooldown: {cool_info}"
             )
 
     def _bms_mark_cycle_done(self, name, now_ts, reason):
@@ -1005,7 +1393,19 @@ class PVControlApp(Hass):
             )
 
             ac_raw = _i32_from_u16_be(regs_ac) if regs_ac else None
-            ac = (-ac_raw) if ac_raw is not None else None
+            if ac_raw is None:
+                ac = None
+            else:
+                ac = (-ac_raw) if AC_SIGN_INVERT else ac_raw
+                
+                
+            if LOG_DIAG_SIGN and ac is not None:
+                meaning = "ZERO"
+                if ac < -VERIFY_TOL_W:
+                    meaning = "CHARGE"
+                elif ac > VERIFY_TOL_W:
+                    meaning = "DISCHARGE"
+                verify_logs.append(f"{name} DIAG VERIFY AC raw={ac_raw} -> ac={ac} meaning={meaning}")
 
             bp = _i32_from_u16_be(regs_bp) if regs_bp else None
 
@@ -1049,9 +1449,10 @@ class PVControlApp(Hass):
 
             # ---------- CHARGE ----------
             if effective_mode == "charge":
-                if not self.pv_surplus:
+                # erlaubt PV oder "already charging" (oder spaeter Netzladen falls du willst)
+                if not (self.pv_surplus or getattr(self, "allow_charge", False)):
                     if DEBUG_WEIGHTS and CALC_LOG:
-                        self.log(f"{n}: skip charge (kein PV-Ueberschuss)")
+                        self.log(f"{n}: skip charge (kein PV und allow_charge=False)")
                     continue
                 if soc >= mx:
                     if DEBUG_WEIGHTS and CALC_LOG:
@@ -1126,7 +1527,7 @@ class PVControlApp(Hass):
                     reasons.append(f"{n}: keine Teilnahmebedingungen erfuellt")
         
             calc_logs.append(
-                f"{LOGTXT['no_dist']} (Entladen): "
+                f"{LOGTXT['no_dist']} ({'Laden' if effective_mode=='charge' else 'Entladen'}): "
                 + "; ".join(reasons)
             )
 
@@ -1208,6 +1609,15 @@ class PVControlApp(Hass):
 
     def read_and_log(self, kwargs):
         
+        # Safety: falls AppDaemon reload / init race -> Backoff-Dict sicher vorhanden
+        if not hasattr(self, "_mb_backoff_until") or not isinstance(self._mb_backoff_until, dict):
+            self._mb_backoff_until = {name: 0.0 for name in self.batteries}
+        else:
+            # neue Batterien nachtragen (falls Konfig geaendert wurde)
+            for _n in self.batteries:
+                if _n not in self._mb_backoff_until:
+                    self._mb_backoff_until[_n] = 0.0
+
 
         # Defaults fuer finally (damit nie "unbound")
         states = {}
@@ -1239,6 +1649,9 @@ class PVControlApp(Hass):
             consumption = None
             actual_flow = 0.0
             calc_logs, write_logs, verify_logs = [], [], []
+            ac_ctrl_now = 0.0
+            A_set = 0.0
+            grid_flow = 0.0
 
             # (optional, aber gut) damit spaeter nix "unbound" wird:
             bms_active = set()
@@ -1254,14 +1667,32 @@ class PVControlApp(Hass):
                 except Exception as e:
                     self.error(f"Zaehler-Lesefehler: {e}")
 
-            # 2) Batteriewerte auslesen
-            states, sum_ac = {}, 0
-            for name, cfg in self.batteries.items():
-                states[name] = dict(ac=0, bp=0, soc=0,
-                                    ctrl=0, mode=0, cfg=cfg, err=0)
+            # 1b) HA Sensor Export: EINMAL pro Zyklus (zentraler Modbus-Poller ersetzt HA modbus:)
+            if HA_EXPORT_ENABLE:
+                for _bn, _cfg in self.batteries.items():
+                    self._poll_and_export_ha_sensors(_bn, _cfg)
 
+            # 2) Batteriewerte auslesen (Regel-Read)
+            states, sum_ac = {}, 0
+            
+            for name, cfg in self.batteries.items():
+                states[name] = dict(
+                    ac=0, bp=0, soc=0,
+                    ctrl=0, mode=0, cfg=cfg, err=0
+                )
+            
+                # Backoff aktiv? Dann diese Batterie im Read ueberspringen
+                now_ts = float(self._now_epoch or time.time())
+                if now_ts < float(self._mb_backoff_until.get(name, 0) or 0):
+                    states[name]["err"] = 1
+                    states[name]["backoff"] = True
+                    continue
+                else:
+                    states[name]["backoff"] = False
+            
                 client = _mb_client(cfg["host"], cfg["port"])
                 if not client.connect():
+                    self._mb_backoff_until[name] = time.time() + 60
                     self.error(f"[{name}] Verbindung fehlgeschlagen")
                     states[name]["err"] = 1
                     try:
@@ -1269,91 +1700,97 @@ class PVControlApp(Hass):
                     except Exception:
                         pass
                     continue
-
+            
                 try:
+                    # --- AC ---
                     regs = self._modbus_read(
                         client, cfg["unit"],
                         REGISTERS["ac_power"][0], REGISTERS["ac_power"][1],
                         name
                     )
-                    ac_raw = _i32_from_u16_be(regs) if regs else 0
-                    ac = -ac_raw  # NORMALIZE: AC>0 discharge, AC<0 charge
-
+                    if regs is None:
+                        states[name]["err"] = 1
+                        self._mb_backoff_until[name] = time.time() + 30
+                        continue
+            
+                    ac_raw = _i32_from_u16_be(regs)
+                    ac = (-ac_raw) if AC_SIGN_INVERT else ac_raw
+            
+                    if LOG_DIAG_SIGN:
+                        meaning = "ZERO"
+                        if ac < -TOLERANCE_W:
+                            meaning = "CHARGE"
+                        elif ac > TOLERANCE_W:
+                            meaning = "DISCHARGE"
+                        self.log(f"{name}: DIAG AC raw={ac_raw} -> ac={ac} meaning={meaning}")
+            
+                    # --- BP ---
                     regs = self._modbus_read(
                         client, cfg["unit"],
                         REGISTERS["battery_power"][0], REGISTERS["battery_power"][1],
                         name
                     )
-                    bp = _i32_from_u16_be(regs) if regs else 0
-
+                    if regs is None:
+                        states[name]["err"] = 1
+                        self._mb_backoff_until[name] = time.time() + 30
+                        continue
+            
+                    bp = _i32_from_u16_be(regs)
+            
+                    if LOG_DIAG_SIGN:
+                        bp_meaning = "ZERO"
+                        if bp < -TOLERANCE_W:
+                            bp_meaning = "DISCHARGE"
+                        elif bp > TOLERANCE_W:
+                            bp_meaning = "CHARGE"
+                        self.log(f"{name}: DIAG BP bp={bp} meaning={bp_meaning}")
+            
+                    # --- SOC ---
                     regs = self._modbus_read(client, cfg["unit"], REGISTERS["soc"], 1, name)
                     if not regs:
                         states[name]["err"] = 1
-                        soc = 0
+                        self._mb_backoff_until[name] = time.time() + 15
+                        soc = int(states[name].get("soc", 0))
+                        states[name]["soc_valid"] = False
                     else:
                         soc = int(regs[0])
-
-
-                    # BMS state handle fuer diese Batterie (wird unten benutzt)
-                    bms = self.bms_state.get(name)
-                    if bms is None:
-                        bms = {
-                            "last_full_ts": 0,
-                            "phase": "idle",
-                            "holding_until": 0,
-                            "cooldown_until": 0,
-                            "min_soc_since": 0,
-                            "safety_done": False,
-                            "safety_active": False,
-                        }
-                        self.bms_state[name] = bms
-
-                    # SOC-SAFETY: Zeit merken/reset
-                    if SOC_SAFETY_ENABLE:
-                        if soc <= SOC_SAFETY_MIN_SOC:
-                            if not bms.get("min_soc_since"):
-                                bms["min_soc_since"] = self._now_epoch
-                                self._save_bms_state()
-                                if SOC_SAFETY_LOG_ENABLE:
-                                    self.log(
-                                        f"SOC-SAFETY: {name} hat Min-SoC {SOC_SAFETY_MIN_SOC}% erreicht "
-                                        f"um {self._fmt_ts(self._now_epoch)}"
-                                    )
-                            elif SOC_SAFETY_LOG_ENABLE and SOC_SAFETY_LOG_EVERY_CYCLE:
-                                since = float(bms.get("min_soc_since") or 0)
-                                if since > 0:
-                                    dur = int(self._now_epoch - since)
-                                    self.log(
-                                        f"SOC-SAFETY: {name} bei {soc}% seit {self._fmt_dh(dur)} "
-                                        f"(seit {self._fmt_ts(since)})"
-                                    )
-                        else:
-                            bms["min_soc_since"] = 0
-                            bms["safety_done"] = False
-                            bms["safety_active"] = False
-
-                    regs_ctrl = self._modbus_read(client, cfg["unit"], REGISTERS["control"], 1, name)
-                    ctrl = regs_ctrl[0] if regs_ctrl else 0
-
-                    regs_mode = self._modbus_read(client, cfg["unit"], REGISTERS["mode"], 1, name)
-                    mode = regs_mode[0] if regs_mode else 0
-
+                        states[name]["soc_valid"] = True
+            
+                    # --- CTRL + MODE in EINEM Read (42000..42010) ---
+                    regs_ctrl = self._modbus_read(client, cfg["unit"], REGISTERS["control"], 1, name)  # 42000
+                    regs_mode = self._modbus_read(client, cfg["unit"], REGISTERS["mode"],    1, name)  # 42010
+                    
+                    if regs_ctrl:
+                        ctrl = int(regs_ctrl[0])
+                    else:
+                        states[name]["err"] = 1
+                        self._mb_backoff_until[name] = time.time() + 15
+                        ctrl = int(states[name].get("ctrl", 0))
+                    
+                    if regs_mode:
+                        mode = int(regs_mode[0])
+                    else:
+                        states[name]["err"] = 1
+                        self._mb_backoff_until[name] = time.time() + 15
+                        mode = int(states[name].get("mode", 0))
+                                
                     sum_ac += ac
                     states[name].update(ac=ac, bp=bp, soc=soc, ctrl=ctrl, mode=mode)
-
-                    if (not regs_ctrl) or ctrl not in CONTROL_ENABLED_VALUES:
+            
+                    if ctrl not in CONTROL_ENABLED_VALUES:
                         states[name]["err"] = 1
-
+            
                     if DEBUG_STATE and CALC_LOG:
                         self.log(
                             f"{name}: {LOGTXT['raw_state']} soc={soc}%, bp={bp}W, ac={ac}W, ctrl={ctrl}, mode_reg={mode}, "
                             f"last_dist={self.last_distribution.get(name, 0)}"
                         )
-
-
+            
                 except Exception as e:
                     self.error(f"[{name}] Modbus-Lesefehler: {e}")
                     states[name]["err"] = 1
+                    self._mb_backoff_until[name] = time.time() + 30
+            
                 finally:
                     try:
                         client.close()
@@ -1362,26 +1799,60 @@ class PVControlApp(Hass):
 
 
 
-            
-            # 3) Grid-Follow Basiswerte
-            grid_flow = float(consumption or 0.0)   # + = Bezug, - = Einspeisung (NUR Smartmeter)
-            
-            # Aus AC je Batterie: bei dir ist AC<0 = Entladen, AC>0 = Laden
-            bat_discharge_now = sum(max(0, -int(st.get("ac", 0))) for st in states.values())  # W
-            bat_charge_now    = sum(max(0,  int(st.get("ac", 0))) for st in states.values())  # W
-            
-            # fuer bestehende Logs/Kompatibilitaet: "actual_flow" als Netzfluss behalten
+            # 3) Grid-Follow Basiswerte (SAUBER ueber AC, symmetrisch)
+            # grid_flow: + = Bezug, - = Einspeisung (Smartmeter)
+            grid_flow = float(consumption or 0.0)
             actual_flow = grid_flow
+            
+            # BMS/SOC-SAFETY Batterien sind "fixed" und duerfen nicht ueberschrieben werden.
+            # Fuer die Regelung zaehlt nur die aktuell steuerbare Batterie-AC-Leistung.
+            bms_active = set()
+            if ENABLE_BMS_CARE:
+                for _n, _b in self.bms_state.items():
+                    if _b.get("phase") in ("charging", "hold"):
+                        bms_active.add(_n)
+            
+            soc_safety_active = set()
+            if SOC_SAFETY_ENABLE:
+                for _n, _b in self.bms_state.items():
+                    if _b.get("safety_active"):
+                        soc_safety_active.add(_n)
+            
+            # Summe "ac" NUR ueber steuerbare Batterien:
+            # ac > 0 = discharge (liefert), ac < 0 = charge (nimmt)
+            ac_ctrl_now = 0.0
+            for n, st in states.items():
+                if n in bms_active:
+                    continue
+                if n in soc_safety_active:
+                    continue
+                ac_ctrl_now += float(st.get("ac", 0) or 0)
+            
+            # Symmetrische Grid-Follow-Formel:
+            # Zielsumme AC der steuerbaren Batterien, um Netzfluss -> 0 zu regeln:
+            # A_set = A_now + grid_flow
+            A_set = ac_ctrl_now + grid_flow
 
+            if LOG_DIAG_GRID:
+                self.log(
+                    "DIAG GRID: "
+                    f"grid_flow={grid_flow:.1f}W "
+                    f"ac_ctrl_now={ac_ctrl_now:.1f}W "
+                    f"A_set={A_set:.1f}W "
+                    f"deadband={GRID_DEADBAND_W}W"
+                )
 
 
             # Zeitfilter fuer PV-Ueberschuss (Anti-PingPong bei Wolken)
-            if grid_flow < PV_CHARGE_ALLOW_W:
+            if grid_flow <= PV_CHARGE_ALLOW_W:
                 if self._pv_ok_since is None:
                     # sofortige Freigabe nach Restart (optional)
                     self._pv_ok_since = time.time() - PV_SURPLUS_MIN_TIME
             else:
+                # PV-Surplus Zeitfilter
                 self._pv_ok_since = None
+                # Grid-Follow STOP Timer (monotonic)
+                self._grid_zero_since = None
            
             
             # ---------------------------------------------------------------------
@@ -1457,8 +1928,12 @@ class PVControlApp(Hass):
                 self._pv_ok_since is not None
                 and (time.time() - self._pv_ok_since) >= PV_SURPLUS_MIN_TIME
             )
-
+            
+            pv_pending = (self._pv_ok_since is not None) and (not pv_surplus)
+            
             self.pv_surplus = bool(pv_surplus)
+            self.pv_pending = bool(pv_pending)
+            self._last_pv_surplus = self.pv_surplus
 
             now_ts = time.time()
             pending_s = None
@@ -1525,148 +2000,200 @@ class PVControlApp(Hass):
 
             # 5) Mode-Wechsel (stabilisiert)
 
-            # Zeitbasis fuer Modus-Stabilisierung (monotonic, restart-sicher)
             now = time.monotonic()
-            
+
             # vorheriger Modus (restart-sicher)
             prev = self.mode_state or "stop"
-                        
+            stable_for = now - float(self.mode_since or now)
+            effective_mode = prev or "stop"
+
 
             # ---------------------------------------------------------
-            # MODE-ENTSCHEIDUNG (Grid-Follow, STOP nur bei Ziel == 0)
+            # MODE-ENTSCHEIDUNG (Grid-Follow ueber A_set = ac_ctrl_now + grid_flow)
+            # STOP erst nach "nahe 0" stabil
             # ---------------------------------------------------------
             
             soc_safety_active_any = any(
                 b.get("safety_active") for b in self.bms_state.values()
             )
             
-            # Default: bleibe im bisherigen Modus
             new_mode = prev or "stop"
             
-            # CHARGE nur bei echter Einspeisung
-            if grid_flow < -TOLERANCE_W:
-                new_mode = "charge"
-            
-            # DISCHARGE, sobald Last da ist ODER Batterie schon laeuft
-            elif grid_flow > TOLERANCE_W or bat_discharge_now > 0:
+            # Deadband um 0: erst ausserhalb umschalten
+            if A_set > GRID_DEADBAND_W:
                 new_mode = "discharge"
+                self._grid_zero_since = None
             
-            # STOP NUR, wenn wirklich nichts mehr zu tun ist
+            elif A_set < -GRID_DEADBAND_W:
+                new_mode = "charge"
+                self._grid_zero_since = None
+            
             else:
-                # Grid ~ 0 UND Batterie liefert nichts UND kein Zwang aktiv
-                if (
-                    bat_discharge_now == 0
-                    and not soc_safety_active_any
-                ):
-                    new_mode = "stop"
+                # innerhalb Deadband: STOP erst nach GRID_STOP_AFTER_S, sonst Modus halten
+                if self._grid_zero_since is None:
+                    self._grid_zero_since = time.monotonic()
+            
+                zero_for = time.monotonic() - self._grid_zero_since
+            
+                # SOC-SAFETY soll nie durch STOP-Timer "weggedrueckt" werden
+                if soc_safety_active_any:
+                    new_mode = prev or "charge"  # SOC-SAFETY ist immer charge
                 else:
-                    # dynamisch weiterregeln
-                    new_mode = prev or "discharge"
+                    if zero_for >= GRID_STOP_AFTER_S:
+                        new_mode = "stop"
+                    else:
+                        new_mode = prev or "stop"
 
-            now = time.monotonic()
-            stable_for = now - self.mode_since
-            effective_mode = new_mode
-            
-            # -------------------------------------------------------------------------
-            # BMS active -> states_no_bms -> Log -> Verteilung  (EINMALIG, ohne Duplikate)
-            # -------------------------------------------------------------------------
-            
-            # 1) BMS aktive Batterie(n) erfassen
-            bms_active = set()
-            bms_charging = set()
-            if ENABLE_BMS_CARE:
-                for _n, _b in self.bms_state.items():
-                    ph = _b.get("phase")
-                    if ph in ("charging", "hold"):
-                        bms_active.add(_n)
-                    if ph == "charging":
-                        bms_charging.add(_n)
-            
-            # 2) Batterien fuer normale Verteilung (ohne BMS-Batterien)
-            states_no_bms = {n: st for n, st in states.items() if n not in bms_active}
-            
-            # 3) Modus-Stabilisierung (Ping-Pong-Schutz)
+
+
+            # -------------------------
+            # Modus-Stabilisierung
+            # -------------------------
+
             if new_mode != prev:
                 if stable_for >= STABLE_TIMER_S:
                     self.mode_state = new_mode
                     self.mode_since = now
+                    effective_mode = new_mode
                     if CALC_LOG:
                         calc_logs.append(
-                            f"Moduswechsel: {MODE_DE.get(prev or 'stop','stopp')} -> {MODE_DE.get(new_mode,'stopp')}"
+                            f"Moduswechsel: {MODE_DE.get(prev,'stopp')} -> {MODE_DE.get(new_mode,'stopp')}"
                         )
                 else:
-                    effective_mode = prev or "stop"
+                    effective_mode = prev
             else:
-                self.mode_since = now
-            
-            # 4) Non-BMS laden nur bei PV-Ueberschuss (BMS darf trotzdem laufen)
-            if effective_mode == "charge" and not self.pv_surplus:
-                if CALC_LOG:
-                    calc_logs.append("Kein PV-Ueberschuss -> non-BMS charge deaktiviert (BMS ggf. aktiv)")
-            
-            # 5) Ein einziges Status-Log (nicht doppelt)
+                effective_mode = prev
+
+            # -------------------------
+            # Status-Log (einmalig)
+            # -------------------------
+
             if CALC_LOG:
                 calc_logs.append(
                     f"Netzfluss = {actual_flow:.1f} W | "
-                    f"Modus: {MODE_DE.get(prev or 'stop')} -> {MODE_DE.get(new_mode)} | "
+                    f"Modus: {MODE_DE.get(prev)} -> {MODE_DE.get(new_mode)} | "
                     f"stabil seit {int(stable_for)} s | "
                     f"wirksam: {MODE_DE.get(effective_mode)}"
                 )
+
+
+            # -----------------------------------------------------------------
+            # HARD OVERRIDE: Wenn Discharge effektiv nicht moeglich (SoC<=Min),
+            # dann effective_mode nicht "discharge" lassen (Anzeige + Logik).
+            # -----------------------------------------------------------------
+                        
+            # Batterien ohne BMS/SOC-SAFETY für normale Logik
+            states_no_bms = {}
+            for n, st in states.items():
+                if n in bms_active:
+                    continue
+                if SOC_SAFETY_ENABLE and self.bms_state.get(n, {}).get("safety_active"):
+                    continue
+                states_no_bms[n] = st
             
+            if effective_mode == "discharge":
+                any_discharge_possible = False
+                for n, st in states_no_bms.items():
+                    soc = int(st.get("soc", 0))
+                    mn = int(st["cfg"].get("min_soc", 0))
+                    if soc > mn and not self._bms_battery_block_discharge(n):
+                        any_discharge_possible = True
+                        break
+
+                if not any_discharge_possible:
+                    # wir koennen physisch nicht entladen -> stop (oder charge wenn bp_ctrl_target<0)
+                    forced = "charge" if A_set < -GRID_DEADBAND_W else "stop"
+                    if CALC_LOG:
+                        calc_logs.append(
+                            f"HARD-OVERRIDE: discharge nicht moeglich (alle SoC<=MinSoC oder BMS block) -> setze wirksam auf {MODE_DE.get(forced)}"
+                        )
+                    effective_mode = forced
+                    self.mode_state = forced
+                    self.mode_since = time.monotonic()
+
+
+
             # -------------------------
-            # Verteilung (WEICH – Variante B)
+            # Verteilung (steuerbare Batterien, ohne BMS/SOC-SAFETY)
+            # target basiert auf A_set
             # -------------------------
+            
             distribution = {}
             
-            # ---------- DISCHARGE ----------
             if effective_mode == "discharge":
-                target_discharge_total = max(0, int(round(bat_discharge_now + grid_flow)))
+            
+                target_w = int(round(max(0.0, A_set)))
+            
                 if CALC_LOG:
-                    calc_logs.append(f"GRID-FOLLOW DISCHARGE: grid={grid_flow:.1f}W bat_now={bat_discharge_now:.1f}W -> target={target_discharge_total}W")
-                
+                    calc_logs.append(
+                        f"GRID-FOLLOW(DISCHARGE): "
+                        f"grid={grid_flow:.1f}W "
+                        f"ac_ctrl_now={ac_ctrl_now:.1f}W "
+                        f"A_set={A_set:.1f}W "
+                        f"target={target_w}W"
+                    )
+            
                 distribution = self._distribute_waterfill(
-                    target_discharge_total, states_no_bms, "discharge", calc_logs
-)
+                    target_w,
+                    states_no_bms,
+                    "discharge",
+                    calc_logs
+                )
             
-                if CALC_LOG:
-                    if not distribution:
-                        calc_logs.append(
-                            "Zielverteilung-entladen: LEER (siehe Gruende oben)"
-                        )
-                    else:
-                        calc_logs.append(
-                            f"Zielverteilung-entladen: {distribution}"
-                        )
-            
-                        
-            # ---------- CHARGE (PV-REST!) ----------
             elif effective_mode == "charge":
-                target_charge_total = max(0, int(round(bat_charge_now + (-grid_flow))))
+            
+                target_w = int(round(max(0.0, -A_set)))
+            
+                allow_charge = bool(self.pv_surplus) or (ac_ctrl_now < -TOLERANCE_W)
+
+                # WICHTIG: _calc_weights() nutzt getattr(self,"allow_charge",False)
+                # -> daher hier pro Zyklus setzen
+                self.allow_charge = bool(allow_charge)
+            
                 if CALC_LOG:
-                    calc_logs.append(f"GRID-FOLLOW CHARGE: grid={grid_flow:.1f}W bat_now={bat_charge_now:.1f}W -> target={target_charge_total}W")
-                
-                # optional: wenn du CHARGE trotzdem nur bei PV-Surplus erlauben willst:
-                if self.pv_surplus:
-                    distribution = self._distribute_waterfill(target_charge_total, states_no_bms, "charge", calc_logs)
+                    calc_logs.append(
+                        f"GRID-FOLLOW(CHARGE): "
+                        f"grid={grid_flow:.1f}W "
+                        f"ac_ctrl_now={ac_ctrl_now:.1f}W "
+                        f"A_set={A_set:.1f}W "
+                        f"target={target_w}W "
+                        f"allow={'YES' if allow_charge else 'NO'}"
+                    )
+            
+                if allow_charge:
+                    subset = (
+                        self._select_pv_charge_subset(target_w, states_no_bms)
+                        if PV_BUCKET_ENABLE
+                        else list(states_no_bms.keys())
+                    )
+            
+                    states_subset = {n: states_no_bms[n] for n in subset}
+            
+                    distribution = self._distribute_waterfill(
+                        target_w,
+                        states_subset,
+                        "charge",
+                        calc_logs
+                    )
                 else:
                     distribution = {}
-
+                    if CALC_LOG:
+                        if getattr(self, "pv_pending", False):
+                            calc_logs.append(
+                                "CHARGE PENDING: PV noch nicht stabil -> halte aktuelle Setpoints (kein STOP)."
+                            )
+                        else:
+                            calc_logs.append(
+                                "CHARGE gesperrt: kein PV-Ueberschuss."
+                            )
             
-                if CALC_LOG and (not self.pv_surplus):
-                    calc_logs.append("CHARGE-Mode aber pv_surplus=NEIN -> distribution leer (nur BMS kann laden)")
-                if CALC_LOG and target_charge_total <= 0 and bms_charging:
-                    calc_logs.append(
-                        "CHARGE target=0: kein Rest fuer non-BMS (BMS ggf. aktiv / keine Einspeisung)."
-                    )
-                            
-            # ---------- STOP ----------
             else:
+                # STOP
                 distribution = {}
+            
+            self._last_distribution_debug = dict(distribution)
 
-            # fuer Tabelle im finally
-            self._last_distribution_debug = dict(distribution or {})
-            self._last_effective_mode = effective_mode
-            self._last_pv_surplus = bool(self.pv_surplus)
+
 
 
             # 7) Schreiben
@@ -1682,6 +2209,11 @@ class PVControlApp(Hass):
                 if bms.get("safety_active"):
                     if CALC_LOG:
                         calc_logs.append(f"{name}: Regelung uebersprungen - SOC-SAFETY aktiv")
+                    continue
+            
+                if st.get("err"):
+                    if CALC_LOG:
+                        calc_logs.append(f"{name}: skip write (read/connect error)")
                     continue
             
                 cfg = st["cfg"]
@@ -1730,27 +2262,33 @@ class PVControlApp(Hass):
                             self.last_distribution[name] = 0
                         continue
 
-
                     # ---------- CHARGE ----------
                     if effective_mode == "charge":
                         limit = min(desired, int(cfg["max_charge_w"]))
                         if int(st.get("soc", 0)) >= mx:
                             limit = 0
-
+                    
                         need_write = abs(limit - old) > TOLERANCE_W
-
+                    
                         # Wenn limit=0: nur schreiben, wenn wirklich etwas zu stoppen ist
                         if limit == 0:
-                            need_write = (old != 0) or (int(st.get("mode", 0)) != 0) or (abs(int(st.get("bp", 0))) > TOLERANCE_W)
-
+                            # PV pending: KEIN STOP/0W schreiben -> aktuelle Setpoints halten
+                            if getattr(self, "pv_pending", False):
+                                need_write = False
+                            else:
+                                need_write = (old != 0) or (int(st.get("mode", 0)) != 0) or (abs(int(st.get("bp", 0))) > TOLERANCE_W)
+                    
                         if need_write:
                             self._modbus_write(client, cfg["unit"], REGISTERS["mode"], 1 if limit > 0 else 0, name)
                             time.sleep(0.03)
                             self._modbus_write(client, cfg["unit"], REGISTERS["charge_set"], limit, name)
                             write_logs.append(f"{name}: laden {old}->{limit}")
                             self.last_distribution[name] = limit
-
+                    
                             self._verify_setpoint_execution(client, cfg, name, "charge", limit, verify_logs)
+                    
+                        continue
+
 
                     
                     # ---------- DISCHARGE ----------
@@ -1758,15 +2296,25 @@ class PVControlApp(Hass):
                         limit = min(desired, int(cfg["max_discharge_w"]))
                         if int(st.get("soc", 0)) <= mn:
                             limit = 0
-                                            
-                        self._modbus_write(client, cfg["unit"], REGISTERS["mode"], 2 if limit > 0 else 0, name)
-                        time.sleep(0.03)
-                        self._modbus_write(client, cfg["unit"], REGISTERS["discharge_set"], limit, name)
-                        write_logs.append(f"{name}: entladen {old}->{limit}")
-                        self.last_distribution[name] = limit
+
+                        need_write = abs(limit - old) > TOLERANCE_W
+
+                        # Wenn limit=0: nicht sofort STOP schreiben, nur wenn wirklich "still" werden soll
+                        if limit == 0:
+                            need_write = (old != 0) or (int(st.get("mode", 0)) != 0) or (abs(int(st.get("bp", 0))) > TOLERANCE_W)
+
+                        if need_write:
+                            # Wichtig: Mode nur setzen, wenn wir wirklich aktiv entladen sollen,
+                            # ansonsten 0 (STOP) nur dann, wenn oben need_write True ist.
+                            self._modbus_write(client, cfg["unit"], REGISTERS["mode"], 2 if limit > 0 else 0, name)
+                            time.sleep(0.03)
+                            self._modbus_write(client, cfg["unit"], REGISTERS["discharge_set"], limit, name)
+                            write_logs.append(f"{name}: entladen {old}->{limit}")
+                            self.last_distribution[name] = limit
+
+                            self._verify_setpoint_execution(client, cfg, name, "discharge", limit, verify_logs)
                         
-                        # >>> NEW: Setpoint-Verifikation
-                        self._verify_setpoint_execution(client, cfg, name, "discharge", limit, verify_logs)
+                       
 
 
                 except Exception as e:
@@ -1801,15 +2349,13 @@ class PVControlApp(Hass):
 
                     last_val = int(self.last_distribution.get(name, 0))
                     soll_val = int(getattr(self, "_last_distribution_debug", {}).get(name, 0))
+
                     bms_obj = self.bms_state.get(name, {})
                     bms_phase = bms_obj.get("phase", "idle")
-                    
-                    if bms_obj.get("safety_active"):
-                        bms_txt = f"soc{SOC_SAFETY_MIN_SOC}->{SOC_SAFETY_TARGET_SOC}"
-                    else:
-                        bms_txt = LOGTXT.get(bms_phase, bms_phase)
+
                     pv_txt = "JA" if bool(getattr(self, "_last_pv_surplus", False)) else "NEI"
 
+                    # Mode aus Register
                     mode_reg = int(st.get("mode", 0))
                     if mode_reg == 1:
                         mode_txt = "CHG"
@@ -1818,32 +2364,35 @@ class PVControlApp(Hass):
                     else:
                         mode_txt = "STP"
 
-                    bp_val = int(st.get("bp", 0))
+                    # Zustand nur über Mode
                     if bms_obj.get("safety_active"):
-                        zustand_txt = f"Laden - SOC-SAFETY"
+                        zustand_txt = "Laden - SOC-SAFETY"
+
                     elif bms_phase in ("charging", "hold"):
                         zustand_txt = "Laden - BMS aktiv"
+
                     else:
-                        if abs(bp_val) <= TOLERANCE_W:
+                        # Zustand nach echter Leistung (AC) anzeigen:
+                        # AC < 0 = Laden, AC > 0 = Entladen/Einspeisen, nahe 0 = Leerlauf
+                        ac_val = int(st.get("ac", 0) or 0)
+                    
+                        if abs(ac_val) <= TOLERANCE_W:
                             zustand_txt = "Leerlauf"
-                        elif bp_val > 0:
+                        elif ac_val < 0:
                             zustand_txt = "Laden"
                         else:
                             zustand_txt = "Entladen"
-                            
-                    bms = self.bms_state.get(name, {})
-                    since = float(bms.get("min_soc_since") or 0)
-                    
+
+                    # SOC11 Zeit
+                    since = float(bms_obj.get("min_soc_since") or 0)
                     if since > 0:
                         soc11_txt = self._fmt_dh(int(self._now_epoch - since))
                     else:
                         soc11_txt = "-"
 
-
                     vals = [
                         name[-1].ljust(COL_WIDTH["bat"]),
                         f"{int(st.get('soc', 0))}%".ljust(COL_WIDTH["soc"]),
-                        str(bp_val).ljust(COL_WIDTH["bp"]),
                         str(int(st.get("ac", 0))).ljust(COL_WIDTH["ac"]),
                         zustand_txt.ljust(COL_WIDTH["zustand"]),
                         ctrl_txt.ljust(COL_WIDTH["ctrl"]),
@@ -1859,12 +2408,14 @@ class PVControlApp(Hass):
                         soc11_txt.ljust(COL_WIDTH["soc11"]),
                         err_txt,
                     ]
+
                     self.log("| " + " | ".join(vals) + " |")
-                   
-                # Klassische Logs – GENAU 1x
+
                 if CALC_LOG:
                     self.log(
-                        f"Zaehler:{consumption}W AC_sum:{sum_ac}W Netz:{actual_flow}W"
+                        f"Zaehler:{consumption}W AC_sum:{sum_ac}W Netz:{actual_flow}W | "
+                        f"ac_ctrl_now:{ac_ctrl_now:.1f}W A_set:{A_set:.1f}W "
+                        f"(ctrl=BMS/SOC-SAFETY ausgeschlossen)"
                     )
                     for m in calc_logs:
                         self.log(m)
@@ -1872,9 +2423,10 @@ class PVControlApp(Hass):
                         self.log(m)
                     for m in verify_logs:
                         self.log(m)
+
                 self.log("=== PVCONTROL TABLE END ===")
+
             except Exception as e:
                 self.error(f"Tabellen-Logging fehlgeschlagen: {e}")
-                
-            # ganz zum Schluss
+
         self._busy = False
