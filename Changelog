@@ -1,0 +1,47 @@
+## Changelog
+
+### 2026-03-01 (New Version)
+
+#### Added
+- Zentrale Registerdefinition `HA_REGMAP` (type: u16/s16/u32/s32 inkl. `scale`, `offset`, `precision` wie in HA-YAML)
+- PV-Surplus Zeitfilter `PV_SURPLUS_MIN_TIME` (Anti-Wolken-PingPong, erst nach stabiler Dauer aktiv)
+- SOC-SAFETY (Anti-Totlaufen am Min-SoC) mit Persistenz:
+  - `min_soc_since`, `safety_active`, `safety_done`
+- Option `SOC_SAFETY_REQUIRE_PV` (Schutzladung nur bei PV-Ueberschuss)
+- HA Timeline Sensoren fuer BMS-Status:
+  - `sensor.bms_<battery>_phase` inkl. `last_full`, `hold_until`, `cooldown_until`
+- Setpoint Execution Verification (optional):
+  - `VERIFY_SETPOINT_EXEC`, `VERIFY_MIN_SET_W`, `VERIFY_TOL_W`
+
+#### Changed
+- Mode-Entscheidung (Grid-Follow):
+  - `stop` nur wenn wirklich Grid ~ 0 UND Batterie ~ 0 UND kein SOC-SAFETY aktiv
+  - `discharge` sobald Last vorhanden oder Batterie bereits laeuft
+  - `charge` nur bei echter Einspeisung
+- BMS-Care als **weicher Modus**:
+  - eine Batterie im BMS (charging/hold), andere Batterien regeln weiter normal
+- Waterfill-Verteilung:
+  - detailliertere Teilnahme-/Ausschlussgruende (SoC, BMS hold/cooldown, pv_surplus)
+  - zusaetzliche Runden-/Residual-Logs
+- Schreiblogik:
+  - weniger Writes durch `TOLERANCE_W` und "need_write" (insb. bei `limit=0`)
+  - Stop schreibt nur wenn wirklich etwas zu stoppen ist (mode/bp/last != 0)
+- Logging/Finally:
+  - unbound-sicher (finally loggt immer stabil)
+  - PVCONTROL Tabelle erweitert (BMS/SOC-SAFETY, pv_surplus, SOC11-Seit)
+
+#### Fixed
+- Robustere Fehlerbehandlung bei Modbus Read/Write (None-Responses / fehlende Keys verursachen keinen Crash)
+- Reduziertes Ping-Pong Verhalten bei PV-Schwankungen durch Surplus-Stabilisierung
+- Schutz vor doppelten/mehrfachen Status-Logs (konsolidierter Log-Block)
+
+---
+
+### Older Version
+
+- Basis Grid-Follow Regelung (laden/entladen/stopp)
+- BMS-Care vorhanden, aber weniger "weich" integriert (mehr Block-/Sonderfaelle)
+- Keine zentrale Registermap (`HA_REGMAP`) fuer einheitliche Skalierung/Typisierung
+- Kein PV-Surplus Zeitfilter (hoeheres Risiko fuer Wolken-PingPong)
+- SOC-SAFETY entweder nicht vorhanden oder ohne vollstaendige Persistenz/Automatik
+- Logging Tabelle vorhanden, aber weniger Zustands-/Timeline-Infos
