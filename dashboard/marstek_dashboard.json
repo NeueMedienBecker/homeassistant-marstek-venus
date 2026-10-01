@@ -1,0 +1,2610 @@
+{
+ "title": "Marstek",
+ "views": [
+  {
+   "title": "Übersicht",
+   "path": "uebersicht",
+   "icon": "mdi:home-battery",
+   "type": "sections",
+   "max_columns": 4,
+   "sections": [
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Status & Auffälligkeiten",
+       "icon": "mdi:heart-pulse"
+      },
+      {
+       "type": "conditional",
+       "conditions": [
+        {
+         "condition": "state",
+         "entity": "switch.marstek_read_only",
+         "state": "on"
+        }
+       ],
+       "card": {
+        "type": "markdown",
+        "content": "### 👁 Beobachtungsmodus\nDie Steuerung liest die Batterien nur aus und **sendet keine Befehle**. Das ist so gewollt, wenn noch eine andere Steuerung die Batterien regelt oder der Netz-Zähler fehlt.\n\n**Ausschalten:** Konfiguration → Hauptschalter & Batterien → „Nur beobachten“ aus."
+       }
+      },
+      {
+       "type": "markdown",
+       "content": "{%- set bats = states.sensor | selectattr('entity_id', 'match', 'sensor.marstekvenus_[0-9]+_battery_soc$') | map(attribute='entity_id') | map('regex_replace', '[^0-9]', '') | map('int') | sort | list -%}\n{%- set tol = states('number.marstek_tolerance_w') | float(40) -%}\n{%- set min_soc = states('number.marstek_soc_safety_min_soc') | int(11) -%}\n{%- set full_days = states('number.marstek_full_charge_interval_days') | int(10) -%}\n{%- set now_ts = now().timestamp() -%}\n{%- set ns = namespace(socs=[], newest=0, pc=0, pd=0) -%}\n{%- for n in bats -%}\n{%- set s = states('sensor.marstekvenus_' ~ n ~ '_battery_soc') | float(-1) -%}\n{%- if s >= 0 %}{% set ns.socs = ns.socs + [s] %}{% endif -%}\n{%- endfor -%}\n{%- set avg = (ns.socs | sum / ns.socs | count) if ns.socs else 0 -%}\n| | Batterie | Letzter Kontakt | Macht gerade | SoC | Temp. max | Letzte Vollladung | Auffälligkeiten |\n|:-:|---|---|---|--:|--:|---|---|\n{% for n in bats -%}\n{%- set p = 'sensor.marstekvenus_' ~ n ~ '_' -%}\n{%- set ents = states.sensor | selectattr('entity_id','match','sensor.marstekvenus_' ~ n ~ '_') | rejectattr('state','in',['unavailable','unknown']) | list -%}\n{%- set last = (ents | map(attribute='last_updated') | map('as_timestamp') | max) if ents else 0 -%}\n{%- if last > ns.newest %}{% set ns.newest = last %}{% endif -%}\n{%- set age = (now_ts - last) | int if last else -1 -%}\n{%- set soc = states(p ~ 'battery_soc') | float(-1) -%}\n{%- set ac = states(p ~ 'ac_power') | float(0) -%}\n{%- set tmax = [states(p ~ 'temp_internal') | float(0), states(p ~ 'temp_mos1') | float(0), states(p ~ 'temp_mos2') | float(0)] | max -%}\n{%- set bms = 'sensor.bms_battery' ~ n ~ '_phase' -%}\n{%- set phase = states(bms) -%}\n{%- set lf = state_attr(bms, 'last_full') -%}\n{%- set lf_ts = as_timestamp(lf, 0) if lf not in [none, 'nie', ''] else 0 -%}\n{%- set lf_days = ((now_ts - lf_ts) / 86400) if lf_ts else -1 -%}\n{%- set comm = states('sensor.pv_battery' ~ n ~ '_comm_mode') -%}\n{%- set prim = state_attr('sensor.pv_battery' ~ n ~ '_comm_mode', 'primary_mode') -%}\n{%- set i = namespace(l=[], lvl=0) -%}\n{%- if age < 0 %}{% set i.l = i.l + ['keine Daten'] %}{% set i.lvl = 2 -%}\n{%- elif age > 900 %}{% set i.l = i.l + ['seit ' ~ (age / 60) | int ~ ' min nicht erreichbar'] %}{% set i.lvl = 2 -%}\n{%- elif age > 300 %}{% set i.l = i.l + ['Daten verzögert (' ~ (age / 60) | int ~ ' min)'] %}{% set i.lvl = [i.lvl, 1] | max %}{% endif -%}\n{%- if soc < 0 %}{% set i.l = i.l + ['SoC fehlt'] %}{% set i.lvl = 2 -%}\n{%- elif soc <= min_soc %}{% set i.l = i.l + ['SoC am Minimum'] %}{% set i.lvl = [i.lvl, 1] | max -%}\n{%- elif ns.socs | count > 1 and (soc - avg) | abs > 15 %}{% set i.l = i.l + ['SoC weicht ' ~ (soc - avg) | round(0) | int ~ ' % vom Schnitt ab'] %}{% set i.lvl = [i.lvl, 1] | max %}{% endif -%}\n{%- if tmax >= 55 %}{% set i.l = i.l + ['Temperatur hoch (' ~ tmax ~ ' °C)'] %}{% set i.lvl = 2 -%}\n{%- elif tmax >= 45 %}{% set i.l = i.l + ['Temperatur erhöht'] %}{% set i.lvl = [i.lvl, 1] | max %}{% endif -%}\n{%- if comm in ['unavailable', 'unknown'] %}{% set i.l = i.l + ['Protokoll-Status fehlt'] %}{% set i.lvl = [i.lvl, 1] | max -%}\n{%- elif prim and comm | lower != prim | lower %}{% set i.l = i.l + ['Fallback aktiv: ' ~ comm ~ ' statt ' ~ prim] %}{% set i.lvl = [i.lvl, 1] | max %}{% endif -%}\n{%- if lf_days < 0 %}{% set i.l = i.l + ['keine Vollladung bekannt'] %}{% set i.lvl = [i.lvl, 1] | max -%}\n{%- elif lf_days > full_days + 2 %}{% set i.l = i.l + ['Vollladung überfällig'] %}{% set i.lvl = [i.lvl, 1] | max %}{% endif -%}\n{%- if age < 0 or age > 900 %}{% set act = '—' -%}\n{%- elif phase == 'charging' %}{% set act = '🔋 BMS-Vollladung (' ~ ac | abs | int ~ ' W)' -%}\n{%- elif phase == 'holding' %}{% set act = '🔋 BMS hält voll' -%}\n{%- elif phase == 'cooldown' %}{% set act = '🧊 BMS-Pause' -%}\n{%- elif ac < -tol %}{% set act = '⬆️ lädt ' ~ ac | abs | int ~ ' W' -%}\n{%- elif ac > tol %}{% set act = '⬇️ entlädt ' ~ ac | int ~ ' W' -%}\n{%- else %}{% set act = '⏸️ Standby' %}{% endif -%}\n{%- if ac < -tol %}{% set ns.pc = ns.pc + ac | abs %}{% elif ac > tol %}{% set ns.pd = ns.pd + ac %}{% endif -%}\n| {{ ['🟢','🟡','🔴'][i.lvl] }} | **Venus {{ n }}** · {{ comm }} | {% if age < 0 %}nie{% elif age < 120 %}vor {{ age }} s{% elif age < 7200 %}vor {{ (age / 60) | int }} min{% else %}vor {{ (age / 3600) | round(1) }} h{% endif %} | {{ act }} | {{ soc | int if soc >= 0 else '–' }} % | {{ tmax | round(1) }} °C | {% if lf_days < 0 %}–{% elif lf_days < 1 %}heute/gestern{% else %}vor {{ lf_days | round(0) | int }} Tagen{% endif %} | {{ i.l | join(', ') if i.l else 'keine' }} |\n{% endfor %}\n{%- set sys_age = (now_ts - ns.newest) | int if ns.newest else -1 %}\n{%- set grid = '__GRID_SENSOR__' %}\n{%- set g_age = (now_ts - as_timestamp(states[grid].last_updated)) | int if states[grid] else -1 %}\n\n**Gesamt:** {% if ns.pc > 0 %}lädt {{ ns.pc | int }} W{% endif %}{% if ns.pc > 0 and ns.pd > 0 %} · {% endif %}{% if ns.pd > 0 %}entlädt {{ ns.pd | int }} W{% endif %}{% if ns.pc == 0 and ns.pd == 0 %}Standby{% endif %} · Ø SoC {{ avg | round(0) | int }} %  \n{% if sys_age < 0 or sys_age > 300 %}🔴 **AppDaemon-Script liefert keine Daten** (seit {{ (sys_age / 60) | int }} min) – AppDaemon-Add-on/Log prüfen{% else %}🟢 Script aktiv (letzte Daten vor {{ sys_age }} s){% endif %} · {% if g_age < 0 or states(grid) in ['unavailable','unknown'] %}🔴 Netz-Zähler nicht verfügbar{% elif g_age > 120 %}🟡 Netz-Zähler seit {{ (g_age / 60) | int }} min ohne neuen Wert{% else %}🟢 Netz-Zähler ok ({{ states(grid) | int }} W){% endif %}\n\n<sub>Grenzen: Kontakt 🟡 > 5 min, 🔴 > 15 min · Temp. 🟡 ≥ 45 °C, 🔴 ≥ 55 °C · Vollladung alle {{ full_days }} Tage (+2 Tage Toleranz) · Min-SoC {{ min_soc }} %</sub>",
+       "grid_options": {
+        "columns": "full"
+       }
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Jetzt",
+       "icon": "mdi:flash"
+      },
+      {
+       "type": "tile",
+       "entity": "switch.marstek_control_enable",
+       "name": "Regelung (Hauptschalter)",
+       "icon": "mdi:power",
+       "grid_options": {
+        "columns": 6
+       },
+       "features_position": "inline"
+      },
+      {
+       "entity": "switch.marstek_read_only",
+       "name": "Nur beobachten (keine Befehle an die Batterien)"
+      },
+      {
+       "type": "tile",
+       "entity": "__GRID_SENSOR__",
+       "name": "Netz (+ Bezug / − Einspeisung)",
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_1_ac_power",
+       "name": "Venus 1",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_2_ac_power",
+       "name": "Venus 2",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_3_ac_power",
+       "name": "Venus 3",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_4_ac_power",
+       "name": "Venus 4",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_5_ac_power",
+       "name": "Venus 5",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       },
+       "visibility": [
+        {
+         "condition": "numeric_state",
+         "entity": "sensor.marstekvenus_5_battery_soc",
+         "above": -1
+        }
+       ]
+      },
+      {
+       "type": "tile",
+       "entity": "sensor.marstekvenus_6_ac_power",
+       "name": "Venus 6",
+       "icon": "mdi:battery-charging",
+       "grid_options": {
+        "columns": 6
+       },
+       "visibility": [
+        {
+         "condition": "numeric_state",
+         "entity": "sensor.marstekvenus_6_battery_soc",
+         "above": -1
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Ladestand",
+       "icon": "mdi:battery-50"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_1_battery_soc",
+       "name": "Venus 1",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_2_battery_soc",
+       "name": "Venus 2",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_3_battery_soc",
+       "name": "Venus 3",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_4_battery_soc",
+       "name": "Venus 4",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_5_battery_soc",
+       "name": "Venus 5",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       },
+       "visibility": [
+        {
+         "condition": "numeric_state",
+         "entity": "sensor.marstekvenus_5_battery_soc",
+         "above": -1
+        }
+       ]
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_6_battery_soc",
+       "name": "Venus 6",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       },
+       "visibility": [
+        {
+         "condition": "numeric_state",
+         "entity": "sensor.marstekvenus_6_battery_soc",
+         "above": -1
+        }
+       ]
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Leistung (24 h)",
+       "icon": "mdi:flash"
+      },
+      {
+       "type": "history-graph",
+       "hours_to_show": 24,
+       "entities": [
+        {
+         "entity": "__GRID_SENSOR__",
+         "name": "Netz"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_ac_power",
+         "name": "Venus 1"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_ac_power",
+         "name": "Venus 2"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_ac_power",
+         "name": "Venus 3"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_ac_power",
+         "name": "Venus 4"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Ladestand (48 h)",
+       "icon": "mdi:battery-clock"
+      },
+      {
+       "type": "history-graph",
+       "hours_to_show": 48,
+       "entities": [
+        {
+         "entity": "sensor.marstekvenus_1_battery_soc",
+         "name": "Venus 1"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_battery_soc",
+         "name": "Venus 2"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_battery_soc",
+         "name": "Venus 3"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_battery_soc",
+         "name": "Venus 4"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Erreichbarkeit (7 Tage)",
+       "icon": "mdi:lan-connect"
+      },
+      {
+       "type": "history-graph",
+       "title": "Protokoll & BMS-Phase – Lücken/„Nicht verfügbar“ = keine Verbindung",
+       "hours_to_show": 168,
+       "entities": [
+        {
+         "entity": "sensor.pv_battery1_comm_mode",
+         "name": "Venus 1 Verbindung"
+        },
+        {
+         "entity": "sensor.pv_battery2_comm_mode",
+         "name": "Venus 2 Verbindung"
+        },
+        {
+         "entity": "sensor.pv_battery3_comm_mode",
+         "name": "Venus 3 Verbindung"
+        },
+        {
+         "entity": "sensor.pv_battery4_comm_mode",
+         "name": "Venus 4 Verbindung"
+        },
+        {
+         "entity": "sensor.bms_battery1_phase",
+         "name": "Venus 1 BMS"
+        },
+        {
+         "entity": "sensor.bms_battery2_phase",
+         "name": "Venus 2 BMS"
+        },
+        {
+         "entity": "sensor.bms_battery3_phase",
+         "name": "Venus 3 BMS"
+        },
+        {
+         "entity": "sensor.bms_battery4_phase",
+         "name": "Venus 4 BMS"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Batterien",
+   "path": "batterien",
+   "icon": "mdi:battery-heart-variant",
+   "type": "sections",
+   "max_columns": 4,
+   "sections": [
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 1",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_1_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_1_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery1_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery1_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery1_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery1_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_1_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_1_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 2",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_2_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_2_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery2_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery2_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery2_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery2_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_2_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 3",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_3_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_3_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery3_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery3_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery3_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery3_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_3_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_3_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 4",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_4_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_4_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery4_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery4_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery4_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery4_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_4_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_4_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 5",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_5_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_5_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery5_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery5_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery5_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery5_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_5_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ],
+     "visibility": [
+      {
+       "condition": "numeric_state",
+       "entity": "sensor.marstekvenus_5_battery_soc",
+       "above": -1
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Venus 6",
+       "icon": "mdi:home-battery"
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_6_battery_soc",
+       "name": "Ladestand",
+       "min": 0,
+       "max": 100,
+       "needle": true,
+       "severity": {
+        "red": 0,
+        "yellow": 20,
+        "green": 40
+       },
+       "grid_options": {
+        "columns": 6
+       }
+      },
+      {
+       "type": "gauge",
+       "entity": "sensor.marstekvenus_6_ac_power",
+       "name": "◀ Laden · Entladen ▶",
+       "unit": "W",
+       "min": -2500,
+       "max": 2500,
+       "needle": true,
+       "grid_options": {
+        "columns": 6
+       },
+       "segments": [
+        {
+         "from": -2500,
+         "color": "#43a047"
+        },
+        {
+         "from": -30,
+         "color": "#9e9e9e"
+        },
+        {
+         "from": 30,
+         "color": "#fb8c00"
+        }
+       ]
+      },
+      {
+       "type": "entities",
+       "state_color": true,
+       "entities": [
+        {
+         "entity": "switch.marstek_battery6_active",
+         "name": "Vom Script gesteuert"
+        },
+        {
+         "type": "section",
+         "label": "Zustand"
+        },
+        {
+         "entity": "sensor.bms_battery6_phase",
+         "name": "BMS-Phase"
+        },
+        {
+         "entity": "sensor.pv_battery6_comm_mode",
+         "name": "Kommunikation (aktiver Weg)"
+        },
+        {
+         "entity": "select.marstek_battery6_comm",
+         "name": "Anbindung (Auswahl)"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_inverter_state",
+         "name": "Wechselrichter-Status"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_battery_voltage",
+         "name": "Spannung"
+        },
+        {
+         "type": "section",
+         "label": "Leistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_charge_power",
+         "name": "Ladeleistung"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_discharge_power",
+         "name": "Entladeleistung"
+        },
+        {
+         "type": "section",
+         "label": "Temperatur"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_temp_internal",
+         "name": "Temp. intern"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_temp_mos1",
+         "name": "Temp. MOS1"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_temp_mos2",
+         "name": "Temp. MOS2"
+        }
+       ],
+       "grid_options": {
+        "columns": "full"
+       }
+      },
+      {
+       "type": "heading",
+       "heading": "Energie heute",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-today"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie gestern",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-arrow-left"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "day",
+           "offset": -1
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "heading",
+       "heading": "Energie diese Woche (ab Montag)",
+       "heading_style": "subtitle",
+       "icon": "mdi:calendar-week"
+      },
+      {
+       "type": "grid",
+       "columns": 2,
+       "square": false,
+       "cards": [
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_charging_energy",
+         "name": "Geladen",
+         "icon": "mdi:battery-plus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        },
+        {
+         "type": "statistic",
+         "entity": "sensor.marstekvenus_6_total_discharging_energy",
+         "name": "Entladen",
+         "icon": "mdi:battery-minus-variant",
+         "stat_type": "change",
+         "period": {
+          "calendar": {
+           "period": "week"
+          }
+         },
+         "unit": "kWh"
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ Was zeigen diese Zahlen?</summary>\n\n**Geladen** = Strom, den diese Batterie aufgenommen hat, **Entladen** = Strom, den sie wieder abgegeben hat (in kWh, aus den Zählern der Batterie). *Heute* zählt ab 0:00 Uhr, *gestern* den ganzen Vortag, *diese Woche* ab Montag 0:00 Uhr. Die Zähler laufen unabhängig davon, ob die Batterie per Modbus oder API angebunden ist.</details>"
+      }
+     ],
+     "visibility": [
+      {
+       "condition": "numeric_state",
+       "entity": "sensor.marstekvenus_6_battery_soc",
+       "above": -1
+      }
+     ]
+    }
+   ]
+  },
+  {
+   "title": "Konfiguration",
+   "path": "konfiguration",
+   "icon": "mdi:tune",
+   "type": "sections",
+   "max_columns": 2,
+   "sections": [
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Einstellungen (live)",
+       "icon": "mdi:tune-vertical"
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "{% set n = states('sensor.marstek_overrides')|int(0) %}{% if n > 0 %}<ha-alert alert-type=\"warning\"><b>{{ n }} Einstellung{{ 'en weichen' if n > 1 else ' weicht' }} von pv_config.py ab.</b> Geänderte Werte sind unten mit ⚠️ markiert, daneben steht der Original-Wert.</ha-alert>{% else %}<ha-alert alert-type=\"success\">Alle Einstellungen entsprechen den Grundwerten aus pv_config.py.</ha-alert>{% endif %}\n\nÄnderungen gelten nach ca. **15 Sekunden** und bleiben auch nach einem Neustart erhalten. Die Datei `pv_config.py` wird dabei nicht verändert."
+      },
+      {
+       "type": "entities",
+       "title": "Hauptschalter & Batterien",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "entity": "switch.marstek_control_enable",
+         "name": "Regelung aktiv (Hauptschalter)"
+        },
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "section",
+          "label": "Venus 1"
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_battery1_active",
+           "name": "Vom Script gesteuert"
+          },
+          {
+           "entity": "select.marstek_battery1_comm",
+           "name": "Anbindung"
+          },
+          {
+           "entity": "sensor.pv_battery1_comm_mode",
+           "name": "Aktiver Weg"
+          },
+          {
+           "type": "section",
+           "label": "Verbindung (IP-Adressen und Ports)"
+          },
+          {
+           "entity": "text.marstek_battery1_modbus_host",
+           "name": "IP LAN-Adapter (Modbus)"
+          },
+          {
+           "entity": "number.marstek_battery1_modbus_port",
+           "name": "Modbus-Port"
+          },
+          {
+           "entity": "number.marstek_battery1_modbus_unit",
+           "name": "Modbus Slave-ID"
+          },
+          {
+           "entity": "text.marstek_battery1_api_host",
+           "name": "WLAN-IP Batterie (API)"
+          },
+          {
+           "entity": "number.marstek_battery1_api_port",
+           "name": "API UDP-Port"
+          }
+         ]
+        },
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "section",
+          "label": "Venus 2"
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_battery2_active",
+           "name": "Vom Script gesteuert"
+          },
+          {
+           "entity": "select.marstek_battery2_comm",
+           "name": "Anbindung"
+          },
+          {
+           "entity": "sensor.pv_battery2_comm_mode",
+           "name": "Aktiver Weg"
+          },
+          {
+           "type": "section",
+           "label": "Verbindung (IP-Adressen und Ports)"
+          },
+          {
+           "entity": "text.marstek_battery2_modbus_host",
+           "name": "IP LAN-Adapter (Modbus)"
+          },
+          {
+           "entity": "number.marstek_battery2_modbus_port",
+           "name": "Modbus-Port"
+          },
+          {
+           "entity": "number.marstek_battery2_modbus_unit",
+           "name": "Modbus Slave-ID"
+          },
+          {
+           "entity": "text.marstek_battery2_api_host",
+           "name": "WLAN-IP Batterie (API)"
+          },
+          {
+           "entity": "number.marstek_battery2_api_port",
+           "name": "API UDP-Port"
+          }
+         ]
+        },
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "section",
+          "label": "Venus 3"
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_battery3_active",
+           "name": "Vom Script gesteuert"
+          },
+          {
+           "entity": "select.marstek_battery3_comm",
+           "name": "Anbindung"
+          },
+          {
+           "entity": "sensor.pv_battery3_comm_mode",
+           "name": "Aktiver Weg"
+          },
+          {
+           "type": "section",
+           "label": "Verbindung (IP-Adressen und Ports)"
+          },
+          {
+           "entity": "text.marstek_battery3_modbus_host",
+           "name": "IP LAN-Adapter (Modbus)"
+          },
+          {
+           "entity": "number.marstek_battery3_modbus_port",
+           "name": "Modbus-Port"
+          },
+          {
+           "entity": "number.marstek_battery3_modbus_unit",
+           "name": "Modbus Slave-ID"
+          },
+          {
+           "entity": "text.marstek_battery3_api_host",
+           "name": "WLAN-IP Batterie (API)"
+          },
+          {
+           "entity": "number.marstek_battery3_api_port",
+           "name": "API UDP-Port"
+          }
+         ]
+        },
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "section",
+          "label": "Venus 4"
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_battery4_active",
+           "name": "Vom Script gesteuert"
+          },
+          {
+           "entity": "select.marstek_battery4_comm",
+           "name": "Anbindung"
+          },
+          {
+           "entity": "sensor.pv_battery4_comm_mode",
+           "name": "Aktiver Weg"
+          },
+          {
+           "type": "section",
+           "label": "Verbindung (IP-Adressen und Ports)"
+          },
+          {
+           "entity": "text.marstek_battery4_modbus_host",
+           "name": "IP LAN-Adapter (Modbus)"
+          },
+          {
+           "entity": "number.marstek_battery4_modbus_port",
+           "name": "Modbus-Port"
+          },
+          {
+           "entity": "number.marstek_battery4_modbus_unit",
+           "name": "Modbus Slave-ID"
+          },
+          {
+           "entity": "text.marstek_battery4_api_host",
+           "name": "WLAN-IP Batterie (API)"
+          },
+          {
+           "entity": "number.marstek_battery4_api_port",
+           "name": "API UDP-Port"
+          }
+         ]
+        },
+        {
+         "type": "conditional",
+         "conditions": [
+          {
+           "entity": "select.marstek_battery5_comm",
+           "state": [
+            "Modbus",
+            "API",
+            "Modbus, sonst API",
+            "API, sonst Modbus"
+           ]
+          }
+         ],
+         "row": {
+          "type": "custom:fold-entity-row",
+          "head": {
+           "type": "section",
+           "label": "Venus 5"
+          },
+          "padding": 12,
+          "entities": [
+           {
+            "entity": "switch.marstek_battery5_active",
+            "name": "Vom Script gesteuert"
+           },
+           {
+            "entity": "select.marstek_battery5_comm",
+            "name": "Anbindung"
+           },
+           {
+            "entity": "sensor.pv_battery5_comm_mode",
+            "name": "Aktiver Weg"
+           },
+           {
+            "type": "section",
+            "label": "Verbindung (IP-Adressen und Ports)"
+           },
+           {
+            "entity": "text.marstek_battery5_modbus_host",
+            "name": "IP LAN-Adapter (Modbus)"
+           },
+           {
+            "entity": "number.marstek_battery5_modbus_port",
+            "name": "Modbus-Port"
+           },
+           {
+            "entity": "number.marstek_battery5_modbus_unit",
+            "name": "Modbus Slave-ID"
+           },
+           {
+            "entity": "text.marstek_battery5_api_host",
+            "name": "WLAN-IP Batterie (API)"
+           },
+           {
+            "entity": "number.marstek_battery5_api_port",
+            "name": "API UDP-Port"
+           }
+          ]
+         }
+        },
+        {
+         "type": "conditional",
+         "conditions": [
+          {
+           "entity": "select.marstek_battery6_comm",
+           "state": [
+            "Modbus",
+            "API",
+            "Modbus, sonst API",
+            "API, sonst Modbus"
+           ]
+          }
+         ],
+         "row": {
+          "type": "custom:fold-entity-row",
+          "head": {
+           "type": "section",
+           "label": "Venus 6"
+          },
+          "padding": 12,
+          "entities": [
+           {
+            "entity": "switch.marstek_battery6_active",
+            "name": "Vom Script gesteuert"
+           },
+           {
+            "entity": "select.marstek_battery6_comm",
+            "name": "Anbindung"
+           },
+           {
+            "entity": "sensor.pv_battery6_comm_mode",
+            "name": "Aktiver Weg"
+           },
+           {
+            "type": "section",
+            "label": "Verbindung (IP-Adressen und Ports)"
+           },
+           {
+            "entity": "text.marstek_battery6_modbus_host",
+            "name": "IP LAN-Adapter (Modbus)"
+           },
+           {
+            "entity": "number.marstek_battery6_modbus_port",
+            "name": "Modbus-Port"
+           },
+           {
+            "entity": "number.marstek_battery6_modbus_unit",
+            "name": "Modbus Slave-ID"
+           },
+           {
+            "entity": "text.marstek_battery6_api_host",
+            "name": "WLAN-IP Batterie (API)"
+           },
+           {
+            "entity": "number.marstek_battery6_api_port",
+            "name": "API UDP-Port"
+           }
+          ]
+         }
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>📋 <b>Hauptschalter & Batterien: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('CONTROL_ENABLE','switch','Regelung aktiv (Hauptschalter)',''),('BATTERY1_ACTIVE','switch','Venus 1 vom Script gesteuert',''),('BATTERY2_ACTIVE','switch','Venus 2 vom Script gesteuert',''),('BATTERY3_ACTIVE','switch','Venus 3 vom Script gesteuert',''),('BATTERY4_ACTIVE','switch','Venus 4 vom Script gesteuert',''),('BATTERY5_ACTIVE','switch','Venus 5 vom Script gesteuert',''),('BATTERY6_ACTIVE','switch','Venus 6 vom Script gesteuert',''),('BATTERY1_COMM','select','Venus 1 Anbindung',''),('BATTERY2_COMM','select','Venus 2 Anbindung',''),('BATTERY3_COMM','select','Venus 3 Anbindung',''),('BATTERY4_COMM','select','Venus 4 Anbindung',''),('BATTERY5_COMM','select','Venus 5 Anbindung',''),('BATTERY6_COMM','select','Venus 6 Anbindung','')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% if cur not in ['unknown','unavailable',''] or not k.startswith('BATTERY') %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% elif t == 'select' %}{% set cv = cur %}{% set ov = '–' if org is none else org %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endif %}{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n- **Regelung aktiv (Hauptschalter):** Aus = das Script steuert gar nichts mehr. Alle Batterien bekommen **einmal STOP** und bleiben dann im Leerlauf. Auch Notladung und BMS-Pflege pausieren. Wieder an = alles läuft normal weiter.\n- **Venus X vom Script gesteuert:** Aus = nur diese Batterie wird herausgenommen (z. B. für Wartung oder um sie in der Marstek-App selbst zu steuern). Sie bekommt einmal STOP, danach schickt das Script ihr nichts mehr. Die anderen Batterien übernehmen ihren Anteil automatisch.\n- **Venus X Anbindung:** Wie das Script mit der Batterie spricht. **Modbus** = über den RS485-LAN-Adapter (Kabel, Standard). **API** = per WLAN direkt an die Batterie (Marstek Open API; muss in der Marstek-App eingeschaltet sein). **Modbus, sonst API** = Modbus hat Vorrang; antwortet der Adapter 3-mal hintereinander nicht, wechselt das Script auf die API und prüft alle 10 Minuten, ob Modbus wieder geht. **API, sonst Modbus** = umgekehrt. Antworten **beide** Wege nicht, wird die Batterie nicht angesteuert und bekommt keinen Anteil – die anderen übernehmen. Die Auswahl wirkt sofort (nächster Regelzyklus).\n- **Venus X aktiver Weg:** Der Weg, den das Script gerade wirklich benutzt. Weicht er von der Auswahl ab, ist der Ausweichweg aktiv.\n\nDie Werte werden weiter angezeigt, nur gesteuert wird nicht.\n</details>\n</details>"
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>ℹ️ <b>Verbindung (IP-Adressen und Ports): Was bedeutet das?</b></summary>\n\nHier stehen die Adressen, unter denen das Script die Batterien erreicht. Änderungen wirken **sofort** (nächster Regelzyklus, ca. 15 s): Die Verbindung zur Batterie wird neu aufgebaut und der Steuermodus neu gesetzt.\n\n- **IP LAN-Adapter (Modbus):** die IP des RS485-LAN-Adapters an der Batterie (Kabel). **Modbus-Port** ist normalerweise 502, **Slave-ID** normalerweise 1.\n- **WLAN-IP Batterie (API):** die WLAN-IP der Batterie selbst – steht in der Marstek-App unter *Einstellungen → WLAN-Konfiguration*. **API UDP-Port** ist normalerweise 30000; die Open API muss in der Marstek-App eingeschaltet sein.\n- **Aktiver Weg:** welcher Weg gerade benutzt wird (Modbus oder API). Die Auswahl des Wegs machst du oben unter „Venus X Anbindung“.\n\nUngültige IP-Adressen werden nicht übernommen (das Feld springt auf den alten Wert zurück). Wie alle Einstellungen gelten die Werte bis zum „Verwerfen“; mit „Einstellungen fest übernehmen“ werden sie in `pv_config.py` geschrieben.\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "SoC-Schutz / Notladung",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_soc_safety_enable",
+           "name": "SoC-Schutz aktiv"
+          },
+          {
+           "entity": "number.marstek_soc_safety_min_soc",
+           "name": "Min-SoC (Notladung ab)"
+          },
+          {
+           "entity": "number.marstek_soc_safety_target_soc",
+           "name": "Ziel-SoC Notladung"
+          },
+          {
+           "entity": "number.marstek_soc_safety_charge_w",
+           "name": "Notladeleistung"
+          },
+          {
+           "entity": "switch.marstek_soc_safety_require_pv",
+           "name": "Sonne bevorzugen"
+          },
+          {
+           "entity": "number.marstek_soc_safety_pv_wait_h",
+           "name": "Max. Warten auf Sonne"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>📋 <b>SoC-Schutz / Notladung: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('SOC_SAFETY_ENABLE','switch','SoC-Schutz aktiv',''),('SOC_SAFETY_MIN_SOC','number','Min-SoC (Notladung ab)','%'),('SOC_SAFETY_TARGET_SOC','number','Ziel-SoC Notladung','%'),('SOC_SAFETY_CHARGE_W','number','Notladeleistung','W'),('SOC_SAFETY_REQUIRE_PV','switch','Sonne bevorzugen',''),('SOC_SAFETY_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Was ist das?** Ein Schutz gegen Tiefentladung. Bleibt eine Batterie **48 Stunden** auf oder unter dem Min-SoC (z. B. im Winter), wird sie ein Stück nachgeladen.\n\n- **SoC-Schutz aktiv:** Schutz ein/aus. Empfehlung: an.\n- **Min-SoC:** Ab diesem Ladestand gilt die Batterie als „fast leer“, die 48-Stunden-Uhr startet.\n- **Ziel-SoC:** Bis hierhin wird nachgeladen. Muss über dem Min-SoC liegen.\n- **Notladeleistung:** Mit wie viel Watt nachgeladen wird.\n- **Sonne bevorzugen:** An = nach den 48 h wird zuerst auf **PV-Überschuss** gewartet.\n- **Max. Warten auf Sonne:** Kommt in dieser Zeit keine Sonne, wird **aus dem Netz** nachgeladen (Standard 12 h, also spätestens nach 60 h insgesamt).\n</details>\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "Regelung",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "number.marstek_grid_deadband_w",
+           "name": "Netz-Totband"
+          },
+          {
+           "entity": "number.marstek_tolerance_w",
+           "name": "Regel-Toleranz"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>📋 <b>Regelung: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('GRID_DEADBAND_W','number','Netz-Totband','W'),('TOLERANCE_W','number','Regel-Toleranz','W')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Was ist das?** Wie fein das Script auf den Stromzähler reagiert.\n\n- **Netz-Totband:** Solange am Zähler weniger als ± diesen Wert (in Watt) fließt, gilt das Haus als „ausgeglichen“. Dann wird nicht zwischen Laden und Entladen umgeschaltet. *Größer* = ruhiger, aber etwas mehr Netzbezug/Einspeisung. *Kleiner* = genauer, aber mehr Hin-und-Her.\n- **Regel-Toleranz:** Sehr kleine Werte (± diesen Wert in Watt) werden als „null“ behandelt, also kein Laden und kein Entladen. Verhindert Flattern bei kleinen Schwankungen.\n\nTipp: nur in kleinen Schritten (5–10 W) ändern und ein paar Minuten beobachten.\n</details>\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "BMS-Pflege",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "switch.marstek_enable_bms_care",
+           "name": "BMS-Pflege (Vollladung)"
+          },
+          {
+           "entity": "number.marstek_full_charge_soc",
+           "name": "Vollladung bis"
+          },
+          {
+           "entity": "number.marstek_full_charge_interval_days",
+           "name": "Vollladung alle"
+          },
+          {
+           "entity": "switch.marstek_bms_care_require_pv",
+           "name": "Sonne bevorzugen"
+          },
+          {
+           "entity": "number.marstek_bms_care_pv_wait_h",
+           "name": "Max. Warten auf Sonne"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>📋 <b>BMS-Pflege: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('ENABLE_BMS_CARE','switch','BMS-Pflege (Vollladung)',''),('FULL_CHARGE_SOC','number','Vollladung bis','%'),('FULL_CHARGE_INTERVAL_DAYS','number','Vollladung alle','Tage'),('BMS_CARE_REQUIRE_PV','switch','Sonne bevorzugen',''),('BMS_CARE_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Was ist das?** Lithium-Akkus sollten ab und zu ganz voll werden – nur dann gleicht das Batterie-Management (BMS) die Zellen aus und die %-Anzeige bleibt genau. Es wird immer nur **eine Batterie pro Tag** voll geladen.\n\n- **BMS-Pflege:** Regelmäßige Vollladung ein/aus. Empfehlung: an.\n- **Vollladung bis:** Ab diesem Ladestand gilt sie als voll. Danach bleibt sie **45 min voll** (Zellausgleich) und wird weitere **30 min nicht entladen**.\n- **Vollladung alle:** Wie oft (10 Tage ≈ 3× im Monat).\n- **Sonne bevorzugen:** An = eine fällige Vollladung startet erst bei **PV-Überschuss**.\n- **Max. Warten auf Sonne:** Kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h).\n</details>\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "Erweitert: PV-Laden & Regelverhalten",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "number.marstek_pv_charge_allow_w",
+           "name": "Laden ab Einspeisung"
+          },
+          {
+           "entity": "number.marstek_pv_surplus_min_time",
+           "name": "PV-Überschuss Mindestdauer"
+          },
+          {
+           "entity": "number.marstek_stable_timer_s",
+           "name": "Moduswechsel frühestens nach"
+          },
+          {
+           "entity": "number.marstek_grid_stop_after_s",
+           "name": "Stopp nach Ausgleich"
+          },
+          {
+           "entity": "switch.marstek_pv_bucket_enable",
+           "name": "PV-Stufen aktiv"
+          },
+          {
+           "entity": "number.marstek_pv_bucket_1_total_w",
+           "name": "Nur 1 Batterie bis"
+          },
+          {
+           "entity": "number.marstek_pv_bucket_2_total_w",
+           "name": "Nur 2 Batterien bis"
+          },
+          {
+           "entity": "number.marstek_pv_min_per_bat_w",
+           "name": "Mindestens je Batterie"
+          },
+          {
+           "entity": "switch.marstek_pv_rotate_enable",
+           "name": "Batterien abwechseln"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>📋 <b>Erweitert: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('PV_CHARGE_ALLOW_W','number','Laden ab Einspeisung','W'),('PV_SURPLUS_MIN_TIME','number','PV-Überschuss Mindestdauer','s'),('STABLE_TIMER_S','number','Moduswechsel frühestens nach','s'),('GRID_STOP_AFTER_S','number','Stopp nach Ausgleich','s'),('PV_BUCKET_ENABLE','switch','PV-Stufen aktiv',''),('PV_BUCKET_1_TOTAL_W','number','Nur 1 Batterie bis','W'),('PV_BUCKET_2_TOTAL_W','number','Nur 2 Batterien bis','W'),('PV_MIN_PER_BAT_W','number','Mindestens je Batterie','W'),('PV_ROTATE_ENABLE','switch','Batterien abwechseln','')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\nNur ändern, wenn du weißt, was du tust – die Standardwerte passen meistens.\n\n- **Laden ab Einspeisung:** Erst wenn mehr als dieser Wert ins Netz fließt (z. B. −100 W), gilt das als PV-Überschuss.\n- **PV-Überschuss Mindestdauer:** So lange muss der Überschuss anhalten, bevor geladen wird (filtert Wolken-Spitzen).\n- **Moduswechsel frühestens nach:** Zwischen Laden ↔ Entladen muss mindestens so viel Zeit liegen (verhindert Hin-und-Her).\n- **Stopp nach Ausgleich:** Ist das Haus so lange ausgeglichen (Netz ≈ 0), gehen die Batterien auf Stopp.\n- **PV-Stufen:** Bei wenig Sonne laden nicht alle Batterien gleichzeitig (effizienter): bis *„Nur 1 Batterie bis“* lädt eine, bis *„Nur 2 Batterien bis“* laden zwei, darüber alle. *„Mindestens je Batterie“* = jede ladende Batterie bekommt mindestens so viel.\n- **Batterien abwechseln:** Bei den PV-Stufen wird die Reihenfolge je Lade-Phase gewechselt, damit alle gleich oft drankommen.\n</details>\n</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Verwaltung",
+       "icon": "mdi:cog-sync"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "Einstellungen sichern / zurückholen",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "sensor.marstek_admin_status",
+           "name": "Status"
+          },
+          {
+           "entity": "sensor.marstek_overrides",
+           "name": "Vorläufig geänderte Einstellungen"
+          },
+          {
+           "entity": "button.marstek_apply_config",
+           "name": "Änderungen fest in pv_config übernehmen",
+           "action_name": "Übernehmen"
+          },
+          {
+           "entity": "button.marstek_reset_overrides",
+           "name": "Änderungen verwerfen",
+           "action_name": "Verwerfen"
+          },
+          {
+           "entity": "button.marstek_factory_reset",
+           "name": "Werksreset (Grundeinstellung)",
+           "action_name": "2× drücken",
+           "icon": "mdi:restore-alert"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>ℹ️ <b>Was machen die drei Knöpfe?</b></summary>\n\nOben unter **Einstellungen (live)** kannst du Werte sofort ändern. Diese Änderungen wirken gleich, sind aber erst einmal nur **vorläufig** (gespeichert neben der Datei `pv_config.py`). In der Tabelle siehst du dann ⚠️ und den Original-Wert daneben.\n\n- **Übernehmen** – schreibt die vorläufigen Änderungen **fest in `pv_config.py`**. Danach sind sie die neuen Grundwerte, das ⚠️ verschwindet. Vorher wird automatisch eine Sicherung angelegt.\n- **Verwerfen** – macht alle vorläufigen Änderungen rückgängig. Es gelten wieder die Werte aus `pv_config.py`.\n- **Werksreset** – setzt **alles** auf die Grundeinstellung bei der Installation zurück (Datei `pv_config.werk`): Einstellungen, übernommene Änderungen **und** im Dashboard angelegte/gelöschte Batterien. Zur Sicherheit **zweimal innerhalb von 15 Sekunden** drücken. Das Script startet danach neu (ca. 10 s).\n\nDie Zeile **Status** zeigt, was zuletzt passiert ist – oder ob ein Knopf noch ein zweites Mal gedrückt werden muss.\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "Batterie anlegen",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "select.marstek_new_comm_mode",
+           "name": "Anbindung"
+          },
+          {
+           "entity": "text.marstek_new_modbus_host",
+           "name": "IP LAN-Adapter (modbus), z. B. 192.168.1.50"
+          },
+          {
+           "entity": "number.marstek_new_port",
+           "name": "Port (modbus)"
+          },
+          {
+           "entity": "number.marstek_new_unit",
+           "name": "Slave-ID (0 = automatisch suchen)"
+          },
+          {
+           "entity": "text.marstek_new_api_host",
+           "name": "WLAN-IP Batterie (api)"
+          },
+          {
+           "entity": "number.marstek_new_api_port",
+           "name": "API-Port (api)"
+          },
+          {
+           "entity": "number.marstek_new_capacity_kwh",
+           "name": "Kapazität"
+          },
+          {
+           "entity": "number.marstek_new_max_charge_w",
+           "name": "Max. Ladeleistung"
+          },
+          {
+           "entity": "number.marstek_new_max_discharge_w",
+           "name": "Max. Entladeleistung"
+          },
+          {
+           "entity": "number.marstek_new_min_soc",
+           "name": "Min-SoC"
+          },
+          {
+           "entity": "number.marstek_new_max_soc",
+           "name": "Max-SoC"
+          },
+          {
+           "entity": "button.marstek_add_battery",
+           "name": "Batterie anlegen",
+           "action_name": "Anlegen",
+           "icon": "mdi:battery-plus"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>ℹ️ <b>Wie lege ich eine Batterie an?</b></summary>\n\n1. **Anbindung** wählen: **modbus** = über einen RS485-LAN-Adapter (wie Venus 1–4), **api** = direkt über WLAN.\n2. Bei *modbus* nur die **IP des RS485-LAN-Adapters** eintragen (Port meist **502**). Die **Slave-ID auf 0** lassen: Das Script sucht sie dann selbst (probiert 1–32, dauert höchstens ca. 15 s) und prüft dabei, ob wirklich eine Batterie antwortet. Hängen mehrere Batterien an einem Adapter, werden schon vergebene IDs übersprungen. Nur wenn die ID bekannt ist, kann sie auch fest eingetragen werden – sie wird dann vor dem Anlegen geprüft.\n   Bei *api* die **WLAN-IP der Batterie** eintragen.\n3. Kapazität, max. Lade-/Entladeleistung und Min/Max-SoC prüfen (Vorgaben passen für eine Venus E).\n4. **Anlegen** drücken. Die Batterie bekommt automatisch den nächsten freien Namen (z. B. battery5), das Script startet neu und regelt sie mit.\n\nIst etwas falsch (ungültige IP, Adapter nicht erreichbar, keine Batterie gefunden, Adresse schon vergeben, Min ≥ Max), steht der Grund oben bei **Status** – es wird dann nichts geändert.\n\n**Hinweis:** Die Anzeigen auf den Tabs *Übersicht* und *Batterien* für Venus 5/6 erscheinen erst, wenn die Batterie auch in Home Assistant als Modbus-Gerät eingetragen ist (`sensor.marstekvenus_5_…`). Die Regelung selbst funktioniert auch ohne.\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
+          "name": "Batterie löschen",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "select.marstek_delete_target",
+           "name": "Batterie"
+          },
+          {
+           "entity": "button.marstek_delete_battery",
+           "name": "Ausgewählte Batterie löschen",
+           "action_name": "2× drücken",
+           "icon": "mdi:battery-remove"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "<details><summary>ℹ️ <b>Löschen oder nur deaktivieren?</b></summary>\n\n- **Deaktivieren** (Schalter oben „Venus N vom Script gesteuert“ aus): Die Batterie bekommt einmal STOP und wird dann in Ruhe gelassen. Sie bleibt eingetragen und kann jederzeit wieder eingeschaltet werden. **Das ist der richtige Weg für Wartung oder Tests.**\n- **Löschen**: Die Batterie wird komplett aus der Regelung entfernt (vorher STOP). Zur Sicherheit **zweimal innerhalb von 15 Sekunden** drücken. Die letzte Batterie kann nicht gelöscht werden. Rückgängig machen: neu anlegen oder Werksreset.\n</details>"
+      }
+     ]
+    },
+    {
+     "type": "grid",
+     "column_span": 2,
+     "cards": [
+      {
+       "type": "heading",
+       "heading": "Weitere Einstellungen (nur Anzeige)",
+       "icon": "mdi:script-text"
+      },
+      {
+       "type": "markdown",
+       "grid_options": {
+        "columns": "full"
+       },
+       "content": "Diese Werte stehen fest in `pv_config.py` und lassen sich hier nicht ändern. Zum Aufklappen auf die Überschrift klicken.\n\n<details><summary><b>Regelverhalten</b></summary>\n\n| Parameter | Name | Wert |\n|---|---|---|\n| Zykluszeit | `INTERVAL` | **15 s** |\n| Stabil-Timer | `STABLE_TIMER_S` | **20 s** |\n| PV-Überschuss min. Dauer | `PV_SURPLUS_MIN_TIME` | **20 s** |\n| Stopp nach Netzbezug | `GRID_STOP_AFTER_S` | **90 s** |\n| Laden erlaubt ab Netz | `PV_CHARGE_ALLOW_W` | **-100 W** |\n| PV-Stufen aktiv | `PV_BUCKET_ENABLE` | **True** |\n| Stufe 1 bis | `PV_BUCKET_1_TOTAL_W` | **300 W** |\n| Stufe 2 bis | `PV_BUCKET_2_TOTAL_W` | **900 W** |\n| Min. pro Batterie | `PV_MIN_PER_BAT_W` | **100 W** |\n| Batterie-Rotation | `PV_ROTATE_ENABLE` | **True** |\n| Rotationsmodus | `PV_ROTATE_MODE` | **cycle** |\n</details>\n\n<details><summary><b>BMS-Pflege Details</b></summary>\n\n| Parameter | Name | Wert |\n|---|---|---|\n| Haltezeit bei voll | `FULL_CHARGE_MIN_HOLD_S` | **45 * 60 s** |\n| Entladen erlaubt nach | `ALLOW_DISCHARGE_AFTER_S` | **30 * 60 s** |\n| Max. Batterien/Tag | `MAX_BMS_BATTERIES_PER_DAY` | **1** |\n| Zwangsladeleistung | `BMS_FORCE_CHARGE_W` | **1200 W** |\n| SoC-Schutz nach | `SOC_SAFETY_AFTER_HOURS` | **48 h** |\n| SoC-Schutz nur mit PV | `SOC_SAFETY_REQUIRE_PV` | **False** |\n</details>\n\n<details><summary><b>Experte / Kommunikation</b></summary>\n\n| Parameter | Name | Wert |\n|---|---|---|\n| Standard-Protokoll | `COMM_MODE_DEFAULT` | **api** |\n| Fallback API↔Modbus | `COMM_MODE_FALLBACK_ENABLE` | **True** |\n| Sollwert verifizieren | `VERIFY_SETPOINT_EXEC` | **False** |\n| Vorzeichen invertieren | `AC_SIGN_INVERT` | **False** |\n| Log-Aufbewahrung | `LOG_RETENTION_DAYS` | **365 Tage** |\n</details>"
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

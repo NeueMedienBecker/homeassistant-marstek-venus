@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Marstek Venus Steuerung: Laufzeitdateien einer Installation
+pv_mqtt_login.json
+pv_mqtt_overrides.json
+pv_batteries.json
+pv_config.werk
+pv_config.default
+backup/

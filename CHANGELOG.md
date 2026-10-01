@@ -1,0 +1,70 @@
+# Changelog
+
+## 2.0.0 (2026-10-01)
+
+### Neu
+- **Installer / Updater** für Home Assistant mit einem Befehl (install.sh, installer/ha_setup.py): richtet Mosquitto, AppDaemon (inkl. Python-Pakete), MQTT-Integration und das Dashboard ein, findet Marstek-Batterien im WLAN und den Netz-Zähler **automatisch, ohne Fragen** (gefragt wird nur, was sich nicht erkennen lässt) und prüft am Ende, ob Werte kommen. Updates übernehmen alle eigenen Einstellungen. Deinstallation mit Sicherung. Deutsch und Englisch.
+- **Beobachtungsmodus** („Nur beobachten", READ_ONLY): liest und zeigt alle Werte, sendet aber keine Befehle an die Batterien. Schaltet sich bei der Einrichtung automatisch ein, wenn schon eine andere Steuerung die Batterien regelt oder der Netz-Zähler fehlt.
+- Unterstützt die neuen Home-Assistant-Pfade ab 2026.7 („Apps" statt „Add-ons").
+- Aufteilung in **pv_control.py** (Regelung), **pv_mqtt.py** (Brücke zum Dashboard) und **pv_config.py** (alle Einstellungen mit Erklärung).
+- **Marstek Open API (WLAN)** als vollwertige Alternative zu Modbus: ein gemeinsamer UDP-Socket für alle Batterien, kurze Timeouts mit Wiederholung, letzte Werte bei kurzen Aussetzern, Sollwert-Auffrischung vor Ablauf des Countdowns, Erkennung von Modell und Firmware mit automatischer Einheiten-Korrektur (Venus E Hardware 2.0 ab Firmware 154: Temperatur und Energiezähler).
+- **Anbindung je Batterie wählbar**: Modbus / API / „Modbus, sonst API" / „API, sonst Modbus". IP-Adressen und Ports im Dashboard änderbar.
+- **Dashboard „Marstek"**: Übersicht mit Ampel je Batterie, Batterien-Seite mit Energie geladen/entladen heute, gestern, diese Woche, aufklappbare Konfiguration, Verwaltung (Einstellungen fest übernehmen, verwerfen, Werksreset, Batterie anlegen/löschen). Alle Einstellungen wirken live ohne Neustart.
+- Hauptschalter und Schalter je Batterie, PV-Vorrang für Notladung und BMS-Pflege, Plausibilitätsprüfung des Netz-Zählers (Ausreißer, veraltete Werte → Stopp).
+- Netz-Zähler: Vorzeichen umkehrbar (POWER_SENSOR „invert"), Werte in kW werden automatisch umgerechnet.
+
+### Geändert
+- Eine Batterie, die auf keinem Weg antwortet, bekommt keinen Leistungsanteil mehr.
+- Sollwerte über die API werden nur bei Änderung gesendet; kleine Änderungen (unter 50 W) werden spätestens nach 30 s nachgeholt.
+- Dauerhafte Modbus-Verbindungen, paralleles Lesen und Schreiben aller Batterien, späte Antworten werden erkannt.
+- Status-Tabelle im Log nur noch jede Minute (bei Ereignissen sofort).
+
+### Behoben
+- Nach einem Verbindungsabbruch konnte die Ausweichlogik dauerhaft auf einem nicht erreichbaren Weg hängen bleiben; die Batterie bekam trotzdem Leistung zugeteilt, die dann ins Netz ging.
+- Temperatur und Energiezähler über die Open API bei Venus E (Hardware 2.0) waren falsch skaliert.
+
+## 1.0 (2026-03-01)
+
+### Added
+- Zentrale Registerdefinition `HA_REGMAP` (type: u16/s16/u32/s32 inkl. `scale`, `offset`, `precision` wie in HA-YAML)
+- PV-Surplus Zeitfilter `PV_SURPLUS_MIN_TIME` (Anti-Wolken-PingPong, erst nach stabiler Dauer aktiv)
+- SOC-SAFETY (Anti-Totlaufen am Min-SoC) mit Persistenz:
+  - `min_soc_since`, `safety_active`, `safety_done`
+- Option `SOC_SAFETY_REQUIRE_PV` (Schutzladung nur bei PV-Ueberschuss)
+- HA Timeline Sensoren fuer BMS-Status:
+  - `sensor.bms_<battery>_phase` inkl. `last_full`, `hold_until`, `cooldown_until`
+- Setpoint Execution Verification (optional):
+  - `VERIFY_SETPOINT_EXEC`, `VERIFY_MIN_SET_W`, `VERIFY_TOL_W`
+
+### Changed
+- Mode-Entscheidung (Grid-Follow):
+  - `stop` nur wenn wirklich Grid ~ 0 UND Batterie ~ 0 UND kein SOC-SAFETY aktiv
+  - `discharge` sobald Last vorhanden oder Batterie bereits laeuft
+  - `charge` nur bei echter Einspeisung
+- BMS-Care als **weicher Modus**:
+  - eine Batterie im BMS (charging/hold), andere Batterien regeln weiter normal
+- Waterfill-Verteilung:
+  - detailliertere Teilnahme-/Ausschlussgruende (SoC, BMS hold/cooldown, pv_surplus)
+  - zusaetzliche Runden-/Residual-Logs
+- Schreiblogik:
+  - weniger Writes durch `TOLERANCE_W` und "need_write" (insb. bei `limit=0`)
+  - Stop schreibt nur wenn wirklich etwas zu stoppen ist (mode/bp/last != 0)
+- Logging/Finally:
+  - unbound-sicher (finally loggt immer stabil)
+  - PVCONTROL Tabelle erweitert (BMS/SOC-SAFETY, pv_surplus, SOC11-Seit)
+
+### Fixed
+- Robustere Fehlerbehandlung bei Modbus Read/Write (None-Responses / fehlende Keys verursachen keinen Crash)
+- Reduziertes Ping-Pong Verhalten bei PV-Schwankungen durch Surplus-Stabilisierung
+- Schutz vor doppelten/mehrfachen Status-Logs (konsolidierter Log-Block)
+
+---
+
+## Ältere Versionen
+
+- Basis Grid-Follow Regelung (laden/entladen/stopp)
+- BMS-Care vorhanden, aber weniger "weich" integriert (mehr Block-/Sonderfaelle)
+- Keine zentrale Registermap (`HA_REGMAP`) fuer einheitliche Skalierung/Typisierung
+- Kein PV-Surplus Zeitfilter (hoeheres Risiko fuer Wolken-PingPong)
+- SOC-SAFETY entweder nicht vorhanden oder ohne vollstaendige Persistenz/Automatik
+- Logging Tabelle vorhanden, aber weniger Zustands-/Timeline-Infos

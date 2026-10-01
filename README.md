@@ -1,296 +1,166 @@
+# Marstek Venus Steuerung für Home Assistant
 
-# Marstek Venus PVControl – Home Assistant / AppDaemon Skript
+**Deutsch** · [English](README.en.md)
 
-Python-/AppDaemon-Skript zur intelligenten Steuerung von **Marstek-Venus-Batteriesystemen**
-in **Home Assistant** ueber **Modbus**.
+Steuert eine oder mehrere **Marstek-Venus-Batterien** (Venus E, Venus E 3.0) aus Home Assistant heraus so,
+dass am Stromzähler möglichst **nichts bezogen und nichts eingespeist** wird: Überschuss vom Balkonkraftwerk
+oder der PV-Anlage landet in den Batterien, abends und nachts decken die Batterien den Verbrauch im Haus.
 
-Das Skript realisiert eine stabile Grid-Follow-Regelung (laden/entladen/stopp), beruecksichtigt
-SoC-Grenzen, enthaelt BMS/Battery-Care (Balancing-Zyklen), eine SOC-SAFETY (Anti-Totlaufen am Min-SoC)
-und liefert ausfuehrliches Logging inkl. Status-Tabelle.
+Die Batterien werden wahlweise über **WLAN (Marstek Open API, ohne Zusatzgerät)** oder über
+**RS485-LAN-Adapter (Modbus TCP)** angesprochen – auch beides mit automatischem Ausweichweg.
 
-> Hinweis: Das Skript ist bewusst **monolithisch** aufgebaut und benoetigt **keine apps.yaml-Parameter**.
-> Konfiguration erfolgt direkt im Script (z.B. BATTERY_CONFIG, POWER_SENSOR, HA_REGMAP).
-
----
-
-## Funktionen (Highlights)
-
-### Grid-Follow Regelung
-- Automatische Umschaltung zwischen **laden / entladen / stopp**
-- **STOP nur, wenn wirklich nichts zu tun ist** (Grid ~ 0, Batterie ~ 0, kein Zwang aktiv)
-- Ping-Pong-Schutz ueber `STABLE_TIMER_S`
-
-### PV-Surplus Zeitfilter (Anti-Wolken-PingPong)
-- PV-Ueberschuss wird erst nach `PV_SURPLUS_MIN_TIME` Sekunden als stabil gewertet
-- reduziert hektisches Umschalten bei kurzen PV-Schwankungen
-
-### Multi-Battery Power Allocation (Waterfill)
-- Leistungsverteilung per **Waterfill** auf alle teilnehmenden Batterien
-- Gewichtung nach **verfuegbarer Energie (rest_kWh)** oberhalb/unterhalb der SoC-Grenzen
-- Beruecksichtigt Limits (`max_charge_w` / `max_discharge_w`), SoC-Sperren und BMS/Cooldown
-
-### BMS / Battery Care (Balancing)
-- Periodische Volladung bis `FULL_CHARGE_SOC` (z.B. alle `FULL_CHARGE_INTERVAL_DAYS` Tage)
-- Haltephase `FULL_CHARGE_MIN_HOLD_S` und anschliessender Cooldown `ALLOW_DISCHARGE_AFTER_S`
-- Maximal `MAX_BMS_BATTERIES_PER_DAY` pro Tag
-- **Weicher BMS-Modus**: BMS laeuft fuer eine Batterie, andere duerfen weiter normal regeln
-- Persistenz in `BMS_STATE_FILE`
-
-### SOC-SAFETY (Anti-Totlaufen unter Min-SoC)
-- Wenn eine Batterie sehr lange am/unter `SOC_SAFETY_MIN_SOC` haengt, startet eine **sanfte Schutzladung**
-- Startbedingung: Dauer >= `SOC_SAFETY_AFTER_HOURS`
-- Ziel: `SOC_SAFETY_TARGET_SOC`
-- Optional: Schutzladung nur bei PV-Ueberschuss (`SOC_SAFETY_REQUIRE_PV`)
-
-### Setpoint Execution Verification (optional)
-- Nach Writes kann AC/Battery-Power gelesen werden (`VERIFY_SETPOINT_EXEC`)
-- Warnung, wenn Setpoint offenbar ignoriert wird (MinSoC/Modus/Internes Limit)
-
-### Logging & Status Table
-- Pro Zyklus eine PVCONTROL Tabelle (SoC, BP, AC, Mode, Soll/Last, BMS/Safety, Errors)
-- Debug-Flags fuer Rohdaten, Gewichte, Setpoints, Modbus TX/RX
+Alles Weitere stellst du bequem im mitgelieferten **Dashboard „Marstek"** ein.
 
 ---
 
-## Voraussetzungen
+## Was kann die Steuerung?
 
-Pflicht:
-- Home Assistant (Core / OS / Supervised)
-- AppDaemon Add-on (installiert **und laufend**)
-- Marstek-Venus Batteriesystem(e)
-- Modbus-Zugriff (TCP oder RTU)
-- Netzwerkverbindung zur Batterie (TCP) bzw. RS485/Adapter (RTU)
-- Schreibrechte fuer `/config/appdaemon/`
-
-Python Pakete:
-- `pymodbus`
-- optional: `paho-mqtt` (nur falls du MQTT-Teile ergaenzt/nutzt)
-
-> Wichtig: Das Skript wird nur geladen und ausgefuehrt, wenn AppDaemon aktiv laeuft.
+- **Nulleinspeisung / Netz-Ausgleich** – Laden bei Überschuss, Entladen bei Bezug, mit Totband und Schutz gegen ständiges Hin- und Herschalten
+- **Mehrere Batterien** – Leistung wird nach Ladestand verteilt; bei wenig PV-Leistung wird gezielt nur eine Batterie geladen (effizienter), die Reihenfolge wechselt
+- **Zwei Anbindungen je Batterie** – Modbus *oder* WLAN-API *oder* „Modbus, sonst API" bzw. „API, sonst Modbus". Antwortet eine Batterie auf keinem Weg, bekommt sie keine Leistung zugeteilt
+- **SoC-Schutz / Notladung** – hängt eine Batterie zu lange am Minimum, wird sie sanft nachgeladen (bevorzugt mit Sonne)
+- **BMS-Pflege** – regelmäßige Vollladung zum Zellausgleich, eine Batterie nach der anderen, bevorzugt mit PV-Überschuss
+- **Sicherheit** – unplausible oder veraltete Zählerwerte stoppen die Batterien; Hauptschalter und Schalter je Batterie
+- **Dashboard** – Übersicht mit Ampel, Ladestand, Leistung, Energie *heute / gestern / diese Woche*, alle Einstellungen live änderbar (ohne Neustart), Batterien anlegen und löschen, Einstellungen sichern
+- **Firmware-Erkennung** – unterschiedliche Einheiten der Open API je Firmware (z. B. Temperatur, Energiezähler) werden automatisch umgerechnet
 
 ---
 
-## Verzeichnisstruktur (WICHTIG)
+## Was brauchst du?
 
-Empfohlene Struktur:
+| | |
+|---|---|
+| **Home Assistant** | Home Assistant OS oder Supervised (also mit Add-ons) |
+| **Batterie** | Marstek Venus E / Venus E 3.0 (andere Venus-Modelle ungetestet) |
+| **Anbindung** | **WLAN:** in der Marstek-App die *Open API* einschalten (siehe unten) – **oder** – **Modbus:** ein RS485-LAN-Adapter je Batterie |
+| **Netz-Zähler** | ein Sensor in Home Assistant, der die aktuelle Leistung am Hausanschluss zeigt (z. B. Lesekopf am Stromzähler, Shelly 3EM). W oder kW, **positiv bei Bezug, negativ bei Einspeisung** (andersherum geht auch – der Installer fragt danach) |
 
-```
-/config/appdaemon/apps/pv_control/
-  pv_control.py
-  __init__.py
-```
-
-Wichtig:
-- Keine Leerzeichen in Datei- oder Ordnernamen
-- Dateiname exakt: `pv_control.py`
-- `__init__.py` wird empfohlen (AppDaemon-Package sauber)
+Mosquitto (MQTT) und AppDaemon brauchst du **nicht** selbst zu installieren – das erledigt der Installer.
 
 ---
 
-## Installation
+## Installation in 3 Schritten
 
-### 1) AppDaemon installieren und starten
-1. Home Assistant -> Einstellungen -> Add-ons
-2. Add-on Store -> **AppDaemon** installieren
-3. AppDaemon starten
-4. Pruefen:
-   - Weboberflaeche erreichbar (Standard-Port: 5050)
-   - Status: laeuft
+**1. Terminal installieren**
 
-### 2) Python Pakete in AppDaemon installieren
-In der AppDaemon Add-on Konfiguration unter **Python packages** eintragen:
+Einstellungen → **Apps** → App installieren → **„Terminal & SSH"** installieren, starten und
+„In Seitenleiste anzeigen" einschalten. (Bei älteren Home-Assistant-Versionen heißt es
+Einstellungen → Add-ons → Add-on-Store. Wer schon „Advanced SSH & Web Terminal" hat, kann das nehmen.)
 
-- `pymodbus`
-- optional: `paho-mqtt`
+**2. Terminal öffnen und diesen einen Befehl einfügen**
 
-Dann:
-- Speichern
-- AppDaemon neu starten
+    curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash
 
-### 3) Script ablegen
-`pv_control.py` nach:
+**3. Warten – der Rest läuft von allein**
 
-- `/config/appdaemon/apps/pv_control/pv_control.py`
+Der Installer richtet alles selbst ein, ohne Fragen:
 
-### 4) apps.yaml (minimal)
-Auch wenn die Konfiguration im Script liegt, brauchst du einen minimalen Eintrag, damit AppDaemon die App startet:
+- Er installiert **Mosquitto (MQTT)** und **AppDaemon** mit den nötigen Python-Paketen und richtet die MQTT-Integration ein
+- Er **sucht deine Batterien im WLAN** (Open API muss in der Marstek-App an sein) und übernimmt sie
+- Er **erkennt deinen Netz-Zähler** (Sensor für die Leistung am Hausanschluss)
+- Er legt das **Dashboard „Marstek"** in der Seitenleiste an und prüft zum Schluss, ob die Batterien Werte liefern
 
-Datei: `/config/appdaemon/apps/apps.yaml`
+Nur wenn er etwas nicht eindeutig erkennt (keine Batterie gefunden, mehrere mögliche Zähler), fragt er nach –
+**Enter** übernimmt dann den Vorschlag. Wer lieber alles selbst angibt: Option --ask.
 
-```yaml
-pv_control:
-  module: pv_control
-  class: PVControlApp
-```
+**Beobachtungsmodus:** Regelt gerade eine andere Steuerung die Batterien (z. B. ein zweites Home Assistant)
+oder fehlt der Netz-Zähler noch, startet die Steuerung im Beobachtungsmodus – sie zeigt alle Werte, sendet
+aber keine Befehle. Ausschalten im Dashboard: Konfiguration → Hauptschalter & Batterien → „Nur beobachten".
 
-AppDaemon neu starten und Logs pruefen.
+> **Tipp:** Gib jeder Batterie (und jedem RS485-Adapter) im Router eine **feste IP-Adresse**.
 
 ---
 
-## Konfiguration im Script
+## Open API in der Marstek-App einschalten (für WLAN)
 
-### Smartmeter / Netzfluss (HA Entity)
-```python
-POWER_SENSOR = {
-    "enabled": True,
-    "entity": "sensor.stromzaehler_sml_aktuelle_wirkleistung"
-}
-```
+1. Marstek-App öffnen und die Batterie auswählen
+2. Einstellungen → **Open API** (bei manchen Versionen unter „Lokale API" / „Netzwerk") → **einschalten**
+3. **UDP-Port 30000** eintragen (Standard)
+4. Die angezeigte **WLAN-IP** der Batterie notieren
 
-Vorzeichen:
-- `grid_flow > 0`  => Netzbezug
-- `grid_flow < 0`  => Einspeisung
-
-### Batterien
-```python
-BATTERY_CONFIG = {
-  "battery1": {
-    "enabled": True,
-    "modbus": True,
-    "host": "192.168.100.201",
-    "port": 502,
-    "unit": 1,
-    "capacity_kwh": 5.6,
-    "max_charge_w": 2500,
-    "max_discharge_w": 2500,
-    "min_soc": 11,
-    "max_soc": 99
-  },
-  "battery2": { ... },
-  "battery3": { ... }
-}
-```
-
-### PV Surplus Stabilisierung
-```python
-PV_CHARGE_ALLOW_W = -150
-PV_SURPLUS_MIN_TIME = 30
-```
-
-Interpretation:
-- PV-Ueberschuss wird angenommen wenn `grid_flow < PV_CHARGE_ALLOW_W`
-- erst nach `PV_SURPLUS_MIN_TIME` Sekunden wird `pv_surplus=True`
-
-### BMS Battery Care
-```python
-ENABLE_BMS_CARE = True
-FULL_CHARGE_SOC = 99
-FULL_CHARGE_INTERVAL_DAYS = 10
-FULL_CHARGE_MIN_HOLD_S = 45 * 60
-ALLOW_DISCHARGE_AFTER_S = 30 * 60
-MAX_BMS_BATTERIES_PER_DAY = 1
-BMS_FORCE_CHARGE_W = 1200
-BMS_STATE_FILE = "/config/appdaemon/data/pv_control_bms_state.json"
-```
-
-### SOC-SAFETY
-```python
-SOC_SAFETY_ENABLE = True
-SOC_SAFETY_MIN_SOC = 11
-SOC_SAFETY_TARGET_SOC = 12
-SOC_SAFETY_AFTER_HOURS = 48
-SOC_SAFETY_CHARGE_W = 400
-SOC_SAFETY_REQUIRE_PV = False
-```
-
-### Register Map (zentral) – `HA_REGMAP`
-Die neue Version nutzt eine zentrale Registerbeschreibung fuer konsistente Readouts/Sensoren
-und kuenftige Erweiterungen.
-
-```python
-# Register-Definitionen: 1x zentral, gilt fuer alle Batterien gleich
-# type: u16, s16, u32, s32
-# scale/offset/precision wie in YAML
-HA_REGMAP = {
-  "soc": {"addr": 32104, "count": 1, "type": "u16", "scale": 1, "offset": 0, "precision": 0, "unit": "%"},
-  "battery_power": {"addr": 32102, "count": 2, "type": "s32", "scale": 1, "offset": 0, "precision": 0, "unit": "W"},
-  "ac_power": {"addr": 32202, "count": 2, "type": "s32", "scale": 1, "offset": 0, "precision": 0, "unit": "W"},
-  "control": {"addr": 42000, "count": 1, "type": "u16", "scale": 1, "offset": 0, "precision": 0},
-  "mode": {"addr": 42010, "count": 1, "type": "u16", "scale": 1, "offset": 0, "precision": 0},
-  "charge_set": {"addr": 42020, "count": 1, "type": "u16", "scale": 1, "offset": 0, "precision": 0, "unit": "W"},
-  "discharge_set": {"addr": 42021, "count": 1, "type": "u16", "scale": 1, "offset": 0, "precision": 0, "unit": "W"},
-}
-```
+Antwortet die Batterie beim Test im Installer gar nicht, ist die Open API meist noch ausgeschaltet oder der Port stimmt nicht.
 
 ---
 
-## Home Assistant Entities
+## Update
 
-### BMS Timeline (dynamisch gesetzt)
-Pro Batterie:
-- `sensor.bms_<battery>_phase`
+Einfach **denselben Befehl erneut** im Terminal ausführen. Deine Einstellungen (Batterien, IPs, Zähler,
+alle im Dashboard geänderten Werte) bleiben erhalten; von allen ersetzten Dateien wird vorher eine
+Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du es bestätigst.
 
-Attribute:
-- `last_full`
-- `hold_until`
-- `cooldown_until`
+**Weitere Optionen** – hinter den Befehl *bash -s --* und die Option hängen, z. B.:
 
-Beispiel:
-- `sensor.bms_battery1_phase`
+    curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash -s -- --reconfigure
 
----
-
-## Troubleshooting (typische Fehler)
-
-| Fehler | Ursache | Loesung |
-|------|---------|--------|
-| `ModuleNotFoundError: pymodbus` | Python Paket fehlt | AppDaemon Add-on -> Python packages -> `pymodbus` eintragen, Neustart |
-| Keine Logausgabe | AppDaemon laeuft nicht / App nicht geladen | AppDaemon Status pruefen, `apps.yaml` Eintrag pruefen |
-| `Entity ... not found` | POWER_SENSOR Entity stimmt nicht | Entity-ID in HA pruefen und in `POWER_SENSOR["entity"]` korrigieren |
-| Viele `Verbindung fehlgeschlagen` | IP/Port falsch, Netzwerk/VLAN/Firewall | Ping/Port 502 pruefen, Routing/ACL checken |
-| Setpoint wird ignoriert | Internes Limit / Modus / MinSoC / Control nicht enabled | `control` Status pruefen, `VERIFY_SETPOINT_EXEC` Logs lesen |
+| Option | Wirkung |
+|---|---|
+| --reconfigure | Batterien und Netz-Zähler neu abfragen (z. B. RS485-Adapter, anderer Zähler) |
+| --ask | Neuinstallation mit allen Fragen statt automatisch |
+| --dashboard | nur das Dashboard neu erzeugen (z. B. nach dem Anlegen einer weiteren Batterie) |
+| --dry-run | Testlauf: zeigt nur, was passieren würde |
+| --yes | Update ohne Rückfragen |
+| --lang en | Installer auf Englisch |
+| --uninstall | Steuerung entfernen (mit Sicherung) |
 
 ---
 
-## Changelog
+## Das Dashboard „Marstek"
 
-### 2026-03-01 (New Version)
+- **Übersicht** – Ampel je Batterie (Kontakt, Ladestand, Temperatur, Vollladung, Ausweichweg), Leistung und Ladestand, Verläufe
+- **Batterien** – je Batterie Zustand, Leistung, Temperaturen und **Energie geladen/entladen heute, gestern, diese Woche**
+- **Konfiguration** – aufklappbar: Hauptschalter, je Batterie Anbindung und IP-Adressen, SoC-Schutz, Regelung, BMS-Pflege, Erweitert; dazu Verwaltung (Einstellungen fest übernehmen / verwerfen / Werksreset, Batterie anlegen / löschen). Jede Gruppe hat eine einfache Erklärung.
 
-#### Added
-- Zentrale Registerdefinition `HA_REGMAP` (type/scale/offset/precision wie YAML)
-- PV-Surplus Zeitfilter `PV_SURPLUS_MIN_TIME` (Anti-Wolken-PingPong)
-- SOC-SAFETY mit Persistenz (`min_soc_since`, `safety_active`, `safety_done`)
-- Option `SOC_SAFETY_REQUIRE_PV` (Schutzladung nur bei PV-Ueberschuss)
-- HA Timeline Sensoren: `sensor.bms_<battery>_phase` inkl. Attribute (last_full/hold_until/cooldown_until)
-- Setpoint Execution Verification (optional): `VERIFY_SETPOINT_EXEC`, `VERIFY_MIN_SET_W`, `VERIFY_TOL_W`
-
-#### Changed
-- Mode-Entscheidung (Grid-Follow): STOP nur bei realem 0-Case, Discharge sobald Last oder Batterie laeuft
-- BMS-Care als **weicher Modus**: eine Batterie im BMS, andere laufen weiter normal
-- Waterfill-Verteilung: bessere Gruende/Logs bei "keine Verteilung moeglich"
-- Schreiblogik: weniger Writes durch Toleranz und "need_write" bei limit=0
-- Logging/Finally: unbound-sicher, Tabelle immer stabil
-
-#### Fixed
-- Stabilere Fehlerbehandlung bei Modbus Read/Write (kein Crash bei None/fehlenden Keys)
-- Reduziert Ping-Pong bei PV-Events durch Surplus-Stabilisierung
-
-### Older Version
-- Basis-Grid-Follow Regelung
-- BMS-Care (weniger weicher Ablauf)
-- Logging Tabelle und grundlegende Debug-Ausgaben
+Änderungen im Dashboard wirken nach ca. 15 Sekunden, ohne Neustart.
 
 ---
 
-## Lizenz
+## Fehlerbehebung
 
-MIT License – freie Nutzung, Aenderung und Weitergabe erlaubt.
+| Problem | Lösung |
+|---|---|
+| Batterie liefert keine Werte (WLAN) | Open API in der App an? Port 30000? WLAN-IP richtig? Im Dashboard unter Konfiguration → Venus N prüfen |
+| Batterie liefert keine Werte (Modbus) | Adapter-IP und Port 502 prüfen, Slave-ID meist 1; nur **eine** Verbindung je Adapter erlaubt (keine zweite Modbus-Integration parallel) |
+| „Netz-Zähler nicht verfügbar" | Sensor in Home Assistant prüfen; bei veralteten Werten (über 60 s) stoppt die Steuerung zur Sicherheit |
+| Batterien laden, wenn sie entladen sollten | Vorzeichen des Zählers falsch → Installer mit --reconfigure starten und die Vorzeichen-Frage mit „nein" beantworten |
+| Konfigurationsseite zeigt rote Kästen | die Erweiterung *fold-entity-row* fehlt → Installer mit --dashboard erneut ausführen oder über HACS installieren |
+| Dashboard zeigt „Beobachtungsmodus" | gewollt, solange eine andere Steuerung läuft oder der Zähler fehlt – danach unter Konfiguration → Hauptschalter & Batterien „Nur beobachten" ausschalten |
+| Sonstiges | Einstellungen → Apps (Add-ons) → AppDaemon → **Protokoll** |
 
 ---
 
-## Autor & Hinweis
+## Wie ist das aufgebaut?
 
-Dieses Projekt wurde von **Neue Medien Becker** erstellt, gepflegt und dokumentiert.
+| Datei | Zweck |
+|---|---|
+| apps/marstek_venus/pv_control.py | die Regelung (AppDaemon-App, Takt 15 s) |
+| apps/marstek_venus/pv_mqtt.py | Brücke zum Dashboard (MQTT-Entitäten „Marstek Steuerung") |
+| apps/marstek_venus/pv_config.py | alle Einstellungen mit Erklärung |
+| dashboard/marstek_dashboard.json | Vorlage für das Dashboard |
+| installer/ha_setup.py, install.sh | Installer / Updater |
 
-Die Konzeption, Umsetzung und Dokumentation basieren auf praktischer Erfahrung aus realen
-Home-Assistant- und Energiemanagement-Installationen.
+Installiert wird nach */addon_configs/a0d7b954_appdaemon/apps/marstek_venus/*. Im Dashboard geänderte Werte
+stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, die MQTT-Zugangsdaten in
+*pv_mqtt_login.json* – diese Dateien bleiben bei Updates unangetastet.
+
+**Ohne Installer** (für Erfahrene): AppDaemon-Add-on mit den Python-Paketen *pymodbus==3.9.2* und *paho-mqtt*,
+den Ordner *apps/marstek_venus* in den AppDaemon-apps-Ordner kopieren, in *apps.yaml* eintragen:
+
+    marstek_venus:
+      module: pv_control
+      class: PVControlApp
+
+dann *pv_config.py* (BATTERY_CONFIG, POWER_SENSOR) anpassen und *pv_mqtt_login.json* mit
+host / port / user / password des MQTT-Brokers anlegen.
+
+Die alte Ein-Datei-Version (bis 03/2026) liegt im Ordner [legacy](legacy/).
 
 ---
 
-## Unterstuetzung
+## Haftung, Lizenz, Kontakt
 
-Wenn dir dieses Projekt hilft und du die Weiterentwicklung unterstuetzen moechtest,
-freue ich mich ueber eine freiwillige Spende.
+Die Steuerung greift aktiv in das Laden und Entladen deiner Batterien ein. Nutzung auf eigene Verantwortung –
+bitte den [Haftungsausschluss](DISCLAIMER.md) lesen. Dieses Projekt steht in keiner Verbindung zu Marstek.
 
-Kontakt:
-- **info@neuemedienbecker.de**
+Lizenz: [MIT](LICENSE) · Entwickelt und gepflegt von **Neue Medien Becker** · info@neuemedienbecker.de
+
+Wenn dir das Projekt hilft, freue ich mich über einen Stern ⭐ auf GitHub oder eine freiwillige Spende.
