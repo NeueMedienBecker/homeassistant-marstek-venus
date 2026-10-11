@@ -33,7 +33,7 @@ Everything else is set up in the included **"Marstek" dashboard** (the dashboard
 | **Home Assistant** | Home Assistant OS or Supervised (with add-ons) |
 | **Battery** | Marstek Venus E / Venus E 3.0 (other Venus models untested) |
 | **Connection** | **Wi-Fi:** enable the *Open API* in the Marstek app (see below) – **or** – **Modbus:** one RS485-to-LAN adapter per battery |
-| **Grid meter** | a sensor in Home Assistant that shows the current power at your grid connection (e.g. IR reader on the meter, Shelly 3EM). W or kW, **positive on import, negative on export** (the other way round works too – the installer asks) |
+| **Grid meter** | a sensor in Home Assistant that shows the current power at your grid connection (e.g. IR reader on the meter, Shelly 3EM). W or kW, **positive on import, negative on export** (the other way round works too: run the installer with --meter and answer the sign question with "no") |
 
 You do **not** need to install Mosquitto (MQTT) or AppDaemon yourself – the installer does that.
 
@@ -105,6 +105,27 @@ replaced if you confirm.
 
 ---
 
+## FAQ
+
+**The dashboard shows "Beobachtungsmodus" (observe mode) – is that an error?**
+No. The control only reads and sends no commands. This happens automatically while the grid meter is missing
+or another control is driving the batteries (e.g. the Marstek app in "Passive" mode or a second Home Assistant).
+Switch it off under Konfiguration → Hauptschalter & Batterien → "Nur beobachten" – but only once no other
+control is running. **Only one control may drive the batteries.**
+
+**I set up the meter after the installation.**
+Run the installer with *--meter*. It detects the meter, stores it and switches observe mode off if nothing
+else speaks against it.
+
+**I got another battery.**
+Enable the Open API in the Marstek app and simply run the normal installer command again – new Wi-Fi
+batteries are found and added, the dashboard is rebuilt. Batteries with RS485 adapter: *--reconfigure*.
+
+**The batteries charge when they should discharge.**
+The meter sign is inverted: run the installer with *--meter* and answer the sign question with "no".
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
@@ -129,7 +150,7 @@ replaced if you confirm.
 | dashboard/marstek_dashboard.json | dashboard template |
 | installer/ha_setup.py, install.sh | installer / updater |
 
-Installed to */addon_configs/a0d7b954_appdaemon/apps/marstek_venus/*. Values changed in the dashboard are
+Installed to */addon_configs/a0d7b954_appdaemon/apps/marstek_venus/* (Home Assistant 2026.7 and later: */app_configs/…*). Values changed in the dashboard are
 stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT credentials in
 *pv_mqtt_login.json* – these files are never touched by updates.
 

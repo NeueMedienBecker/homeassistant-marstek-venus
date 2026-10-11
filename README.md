@@ -33,7 +33,7 @@ Alles Weitere stellst du bequem im mitgelieferten **Dashboard „Marstek"** ein.
 | **Home Assistant** | Home Assistant OS oder Supervised (also mit Add-ons) |
 | **Batterie** | Marstek Venus E / Venus E 3.0 (andere Venus-Modelle ungetestet) |
 | **Anbindung** | **WLAN:** in der Marstek-App die *Open API* einschalten (siehe unten) – **oder** – **Modbus:** ein RS485-LAN-Adapter je Batterie |
-| **Netz-Zähler** | ein Sensor in Home Assistant, der die aktuelle Leistung am Hausanschluss zeigt (z. B. Lesekopf am Stromzähler, Shelly 3EM). W oder kW, **positiv bei Bezug, negativ bei Einspeisung** (andersherum geht auch – der Installer fragt danach) |
+| **Netz-Zähler** | ein Sensor in Home Assistant, der die aktuelle Leistung am Hausanschluss zeigt (z. B. Lesekopf am Stromzähler, Shelly 3EM). W oder kW, **positiv bei Bezug, negativ bei Einspeisung** (andersherum geht auch: Installer mit --meter starten und die Vorzeichen-Frage mit „nein“ beantworten) |
 
 Mosquitto (MQTT) und AppDaemon brauchst du **nicht** selbst zu installieren – das erledigt der Installer.
 
@@ -106,6 +106,31 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 
 ---
 
+## Häufige Fragen
+
+**Das Dashboard zeigt „Beobachtungsmodus“ – ist das ein Fehler?**
+Nein. Die Steuerung liest nur und sendet keine Befehle. Das passiert automatisch, wenn der Netz-Zähler noch
+fehlt oder eine andere Steuerung die Batterien gerade regelt (z. B. die Marstek-App im Modus „Passive“ oder ein
+zweites Home Assistant). Ausschalten: Konfiguration → Hauptschalter & Batterien → „Nur beobachten“ aus – aber
+erst, wenn keine andere Steuerung mehr läuft. **Es darf immer nur eine Steuerung die Batterien regeln.**
+
+**Ich habe den Zähler erst nach der Installation eingerichtet.**
+Im Terminal den Installer mit *--meter* starten. Er erkennt den Zähler, trägt ihn ein und schaltet den
+Beobachtungsmodus aus, wenn nichts mehr dagegenspricht.
+
+**Ich habe eine weitere Batterie bekommen.**
+Open API in der Marstek-App einschalten und einfach den normalen Installer-Befehl erneut ausführen – neue
+WLAN-Batterien werden gefunden und ergänzt, das Dashboard wird neu erzeugt. Batterien mit RS485-Adapter:
+Installer mit *--reconfigure*.
+
+**Die Batterien laden, wenn sie entladen sollten.**
+Das Vorzeichen des Zählers ist vertauscht: Installer mit *--meter* starten und die Vorzeichen-Frage mit „nein“ beantworten.
+
+**Ich habe die alte Ein-Datei-Version (1.0) im Einsatz.**
+Einfach den Installer ausführen. Die alte Datei bleibt liegen, bitte den alten Eintrag in *apps.yaml* danach entfernen.
+
+---
+
 ## Das Dashboard „Marstek"
 
 - **Übersicht** – Ampel je Batterie (Kontakt, Ladestand, Temperatur, Vollladung, Ausweichweg), Leistung und Ladestand, Verläufe
@@ -140,7 +165,7 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 | dashboard/marstek_dashboard.json | Vorlage für das Dashboard |
 | installer/ha_setup.py, install.sh | Installer / Updater |
 
-Installiert wird nach */addon_configs/a0d7b954_appdaemon/apps/marstek_venus/*. Im Dashboard geänderte Werte
+Installiert wird nach */addon_configs/a0d7b954_appdaemon/apps/marstek_venus/* (bei Home Assistant ab 2026.7: */app_configs/…*). Im Dashboard geänderte Werte
 stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, die MQTT-Zugangsdaten in
 *pv_mqtt_login.json* – diese Dateien bleiben bei Updates unangetastet.
 
