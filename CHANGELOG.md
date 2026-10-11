@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.3 (2026-10-11)
+
+### Behoben
+- Dashboard: Fehlt der Netz-Zaehler noch, steht jetzt ein klarer Hinweis mit Anleitung statt Entitaet nicht gefunden.
+
 ## 2.0.2 (2026-10-11)
 
 ### Behoben

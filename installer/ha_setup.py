@@ -690,7 +690,41 @@ def build_dashboard(template, bat_indexes, grid_sensor, entity_map=None, prefix=
     s = s.replace("__GRID_SENSOR__", grid_sensor or "sensor.unknown")
     for (idx, key), ent in (entity_map or {}).items():
         s = re.sub(rf"sensor\.{prefix}_{idx}_{key}(?![a-z0-9_])", ent, s)
-    return json.loads(s)
+    cfg = json.loads(s)
+    if grid_sensor == GRID_MISSING:
+        _grid_missing_cards(cfg)
+    return cfg
+
+
+GRID_MISSING_CARD = {"type": "markdown", "content": (
+    "⚠️ **Netz-Zähler fehlt.** Die Steuerung braucht einen Sensor, der die aktuelle Leistung am Hausanschluss "
+    "zeigt (z. B. Lesekopf am Stromzähler, Shelly 3EM). Sensor in Home Assistant einrichten, dann im Terminal "
+    "den Installer mit der Option --reconfigure ausführen und den Sensor auswählen.")}
+
+
+def _grid_missing_cards(o):
+    """Kachel / Zeile des fehlenden Zaehlers durch einen Hinweis ersetzen."""
+    if isinstance(o, dict):
+        for k, v in list(o.items()):
+            if isinstance(v, list):
+                new = []
+                for it in v:
+                    if isinstance(it, dict) and it.get("entity") == GRID_MISSING:
+                        if k == "cards":
+                            new.append(json.loads(json.dumps(GRID_MISSING_CARD)))
+                        elif k == "entities":
+                            new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --reconfigure)"})
+                        else:
+                            new.append(it)
+                    elif isinstance(it, str) and it == GRID_MISSING and k == "entities":
+                        new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --reconfigure)"})
+                    else:
+                        new.append(it)
+                o[k] = new
+            _grid_missing_cards(o[k])
+    elif isinstance(o, list):
+        for it in o:
+            _grid_missing_cards(it)
 
 
 # ---------------------------------------------------------------------------
