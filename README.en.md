@@ -94,6 +94,7 @@ replaced if you confirm.
 
 | Option | Effect |
 |---|---|
+| --meter | pick the grid meter again only (e.g. after setting up the meter) |
 | --reconfigure | ask batteries and grid meter again (e.g. RS485 adapters, other meter) |
 | --ask | new installation with all questions instead of automatic |
 | --dashboard | rebuild the dashboard only (e.g. after adding another battery) |

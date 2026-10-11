@@ -95,6 +95,7 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 
 | Option | Wirkung |
 |---|---|
+| --meter | nur den Netz-Zähler neu wählen (z. B. nachdem der Lesekopf eingerichtet wurde) |
 | --reconfigure | Batterien und Netz-Zähler neu abfragen (z. B. RS485-Adapter, anderer Zähler) |
 | --ask | Neuinstallation mit allen Fragen statt automatisch |
 | --dashboard | nur das Dashboard neu erzeugen (z. B. nach dem Anlegen einer weiteren Batterie) |

@@ -699,7 +699,7 @@ def build_dashboard(template, bat_indexes, grid_sensor, entity_map=None, prefix=
 GRID_MISSING_CARD = {"type": "markdown", "content": (
     "⚠️ **Netz-Zähler fehlt.** Die Steuerung braucht einen Sensor, der die aktuelle Leistung am Hausanschluss "
     "zeigt (z. B. Lesekopf am Stromzähler, Shelly 3EM). Sensor in Home Assistant einrichten, dann im Terminal "
-    "den Installer mit der Option --reconfigure ausführen und den Sensor auswählen.")}
+    "den Installer mit der Option --meter ausführen.")}
 
 
 def _grid_missing_cards(o):
@@ -713,11 +713,11 @@ def _grid_missing_cards(o):
                         if k == "cards":
                             new.append(json.loads(json.dumps(GRID_MISSING_CARD)))
                         elif k == "entities":
-                            new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --reconfigure)"})
+                            new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --meter)"})
                         else:
                             new.append(it)
                     elif isinstance(it, str) and it == GRID_MISSING and k == "entities":
-                        new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --reconfigure)"})
+                        new.append({"type": "section", "label": "Netz-Zähler fehlt (Installer mit --meter)"})
                     else:
                         new.append(it)
                 o[k] = new
@@ -1493,10 +1493,10 @@ def auto_setup(tv):
         hint(L("Deshalb startet die Steuerung im BEOBACHTUNGSMODUS: sie liest und zeigt alle Werte, sendet aber "
                "keine Befehle an die Batterien. Ausschalten im Dashboard: Konfiguration -> Hauptschalter & "
                "Batterien -> 'Nur beobachten'" + (" (vorher den Netz-Zaehler einrichten und den Installer mit "
-               "--reconfigure starten)." if ps["entity"] == GRID_MISSING else "."),
+               "--meter starten)." if ps["entity"] == GRID_MISSING else "."),
                "So the control starts in OBSERVE MODE: it reads and shows all values but sends no commands to the "
                "batteries. Switch it off in the dashboard: Konfiguration -> Hauptschalter & Batterien -> "
-               "'Nur beobachten'" + (" (set up the grid meter first and run the installer with --reconfigure)."
+               "'Nur beobachten'" + (" (set up the grid meter first and run the installer with --meter)."
                                       if ps["entity"] == GRID_MISSING else ".")))
     return bcfg, comm, ps, read_only
 
@@ -1532,6 +1532,55 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
         ok(L(f"Neue Batterie Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}",
              f"New battery Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}"))
     return config_set(cfg_text, dict(BATTERY_CONFIG=cfg, **comm)), len(found)
+
+
+
+def pick_grid_sensor(current=None):
+    """Netz-Zaehler automatisch waehlen, wenn eindeutig; sonst fragen."""
+    current = None if current in (None, "", GRID_MISSING) else current
+    pick, cands = auto_grid_sensor()
+    if pick and not current:
+        head(L("Netz-Zaehler", "Grid meter"))
+        _, eid, name, state, unit = pick
+        ok(L(f"Netz-Zaehler erkannt: {eid} ({name}, gerade {state} {unit or ''})",
+             f"Grid meter detected: {eid} ({name}, now {state} {unit or ''})"))
+        hint(L("Angenommen: positiver Wert = Strom aus dem Netz, negativer Wert = Einspeisung. Laden die Batterien "
+               "spaeter, wenn sie entladen sollten: Installer mit --meter starten und die Vorzeichen-Frage mit "
+               "'nein' beantworten.",
+               "Assumed: positive value = power drawn from the grid, negative = feed-in. If the batteries charge "
+               "when they should discharge: run the installer with --meter and answer the sign question with 'no'."))
+        return {"enabled": True, "entity": eid, "invert": False}
+    if cands or current:
+        return ask_grid_sensor(current)
+    head(L("Netz-Zaehler", "Grid meter"))
+    warn(L("Kein Netz-Zaehler in Home Assistant gefunden (Sensor fuer die Leistung am Hausanschluss).",
+           "No grid meter found in Home Assistant (sensor for the power at the grid connection)."))
+    return {"enabled": True, "entity": GRID_MISSING, "invert": False}
+
+
+def decide_read_only(cfg_text, app_dir, ps):
+    """Nach --meter / --reconfigure: Beobachtungsmodus nur ausschalten, wenn kein Grund mehr besteht."""
+    vals = config_values(cfg_text)
+    if not vals.get("READ_ONLY", False):
+        return False
+    if ps.get("entity") in (None, "", GRID_MISSING):
+        return True
+    busy = []
+    for name, b in batteries_from_config(cfg_text, app_dir).items():
+        ip = (b.get("api_host") or "").strip()
+        if not ip:
+            continue
+        mode = api_get_mode(ip, b.get("api_port") or 30000)
+        if mode and str(mode.get("mode") or "").strip().lower() == "passive":
+            busy.append(bat_index(name))
+        time.sleep(1.2)
+    if busy:
+        warn(L(f"Venus {', '.join(map(str, busy))} wird gerade von einer anderen Steuerung geregelt - "
+               f"Beobachtungsmodus bleibt an.",
+               f"Venus {', '.join(map(str, busy))} is currently controlled by another control - observe mode stays on."))
+        return True
+    return not ask_yes(L("Beobachtungsmodus ausschalten (die Steuerung regelt dann die Batterien)?",
+                         "Switch off observe mode (the control then drives the batteries)?"), True)
 
 
 # ---------------------------------------------------------------------------
@@ -1764,6 +1813,7 @@ def main():
     ap.add_argument("--uninstall", action="store_true")
     ap.add_argument("--dashboard", action="store_true", help="nur das Dashboard neu erzeugen")
     ap.add_argument("--reconfigure", action="store_true", help="Batterien und Zaehler neu abfragen")
+    ap.add_argument("--meter", action="store_true", help="nur den Netz-Zaehler neu waehlen")
     ap.add_argument("--yes", action="store_true", help="alle Vorschlaege uebernehmen (Update ohne Rueckfragen)")
     ap.add_argument("--ask", action="store_true", help="Neuinstallation: alles einzeln abfragen statt automatisch")
     a = ap.parse_args()
@@ -1826,13 +1876,18 @@ def main():
         if a.reconfigure:
             vals = config_values(cfg_text)
             bcfg, comm = ask_batteries(vals)
+            cfg_text = config_set(cfg_text, dict(BATTERY_CONFIG=bcfg, **comm))
             ps = ask_grid_sensor((vals.get("POWER_SENSOR") or {}).get("entity"))
-            ro = vals.get("READ_ONLY", False)
-            if ro and ps.get("entity") and ps["entity"] != GRID_MISSING:
-                ro = not ask_yes(L("Beobachtungsmodus ausschalten (Steuerung regelt die Batterien)?",
-                                   "Switch off observe mode (the control drives the batteries)?"), True)
-            read_only = bool(ro)
-            cfg_text = config_set(cfg_text, dict(BATTERY_CONFIG=bcfg, POWER_SENSOR=ps, READ_ONLY=read_only, **comm))
+            read_only = decide_read_only(cfg_text, app_dir, ps)
+            cfg_text = config_set(cfg_text, dict(POWER_SENSOR=ps, READ_ONLY=read_only))
+        elif a.meter:
+            vals = config_values(cfg_text)
+            cur = (vals.get("POWER_SENSOR") or {}).get("entity")
+            ps = pick_grid_sensor(cur)
+            read_only = decide_read_only(cfg_text, app_dir, ps)
+            cfg_text = config_set(cfg_text, dict(POWER_SENSOR=ps, READ_ONLY=read_only))
+            if cur == GRID_MISSING and ps.get("entity") != GRID_MISSING:
+                added = 1  # Dashboard ohne Rueckfrage neu erzeugen (Hinweis-Karte raus)
     else:
         head(L("Neuinstallation", "New installation"))
         added = 0

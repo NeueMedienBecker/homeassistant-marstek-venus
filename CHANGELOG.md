@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.5 (2026-10-11)
+
+### Neu
+- Option --meter: nur den Netz-Zaehler neu waehlen (automatisch, wenn eindeutig). Der Beobachtungsmodus wird danach nur ausgeschaltet, wenn keine andere Steuerung die Batterien regelt.
+
 ## 2.0.4 (2026-10-11)
 
 ### Neu
