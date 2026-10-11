@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.1 (2026-10-11)
+
+### Behoben
+- Installer: funktioniert jetzt auch mit dem Standard-Terminal „Terminal & SSH“. Dort fehlte der Zugriff auf Home Assistant, deshalb wurden MQTT-Integration und Dashboard nicht angelegt und der Netz-Zähler nicht gefunden. Eine kleine Hilfs-App in AppDaemon übernimmt das während der Einrichtung und wird danach automatisch wieder entfernt.
+- Wird der Ordner www neu angelegt, startet der Installer Home Assistant am Ende einmal neu, damit das Dashboard alle Teile laden kann.
+- Eine von Mosquitto gemeldete MQTT-Einrichtung wird zuverlässig gefunden und abgeschlossen.
+
 ## 2.0.0 (2026-10-01)
 
 ### Neu

@@ -18,6 +18,7 @@ Only the Python standard library is used.
 
 import argparse
 import ast
+import atexit
 import base64
 import json
 import os
@@ -81,6 +82,87 @@ COMM_CHOICES = ("Modbus", "API", "Modbus, sonst API", "API, sonst Modbus")
 
 LANG = "de"
 DRY = False
+_BRIDGE_DIR = None          # Austauschordner der AppDaemon-Hilfs-App (wenn die HA-API nicht direkt geht)
+NEED_HA_RESTART = False     # www-Ordner neu angelegt -> /local erst nach Neustart verfuegbar
+BRIDGE_APP = "marstek_bridge"
+BRIDGE_BLOCK = "\n" + BRIDGE_APP + ":\n  module: " + BRIDGE_APP + "\n  class: MarstekBridge\n"
+BRIDGE_CODE = '''# -*- coding: utf-8 -*-
+# Marstek Venus - Hilfs-App fuer den Installer (wird nach der Einrichtung automatisch entfernt).
+# Das Terminal-Add-on darf die Home-Assistant-API nicht direkt benutzen; diese App fuehrt die
+# Anfragen des Installers aus. Austausch ueber Dateien im Unterordner "io".
+import importlib.machinery
+import importlib.util
+import json
+import os
+import threading
+import time
+
+from appdaemon.plugins.hass.hassapi import Hass
+
+_DIR = os.path.dirname(os.path.abspath(__file__))
+_IO = os.path.join(_DIR, "io")
+
+
+def _load_setup():
+    loader = importlib.machinery.SourceFileLoader("marstek_ha_setup", os.path.join(_DIR, "ha_setup.job"))
+    spec = importlib.util.spec_from_loader("marstek_ha_setup", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+class MarstekBridge(Hass):
+    def initialize(self):
+        os.makedirs(_IO, exist_ok=True)
+        self._stop = False
+        threading.Thread(target=self._loop, name="marstek_bridge", daemon=True).start()
+        self.log("Marstek-Installer: Hilfs-App aktiv")
+
+    def terminate(self):
+        self._stop = True
+
+    def _loop(self):
+        mod = None
+        while not self._stop:
+            if not os.path.isdir(_IO):
+                return  # Installer ist fertig und hat die Hilfs-App entfernt
+            try:
+                with open(os.path.join(_IO, "alive"), "w") as f:
+                    f.write(str(time.time()))
+                for fn in sorted(os.listdir(_IO)):
+                    if not (fn.startswith("req_") and fn.endswith(".json")):
+                        continue
+                    path = os.path.join(_IO, fn)
+                    try:
+                        with open(path, encoding="utf-8") as f:
+                            req = json.load(f)
+                    except ValueError:
+                        continue
+                    os.remove(path)
+                    if mod is None:
+                        mod = _load_setup()
+                    out = self._do(mod, req)
+                    rp = os.path.join(_IO, "resp_" + fn[4:])
+                    with open(rp + ".tmp", "w", encoding="utf-8") as f:
+                        json.dump(out, f)
+                    os.replace(rp + ".tmp", rp)
+            except Exception as e:  # noqa: BLE001
+                self.log("Hilfs-App: %r" % (e,), level="WARNING")
+            time.sleep(0.4)
+
+    def _do(self, mod, req):
+        try:
+            if req.get("kind") == "ws":
+                ws = mod.WS()
+                try:
+                    return {"ok": True, "result": ws.call(req["type"], **(req.get("data") or {}))}
+                finally:
+                    ws.close()
+            return {"ok": True, "result": mod.http(req["method"], mod.SUP + "/core/api" + req["path"],
+                                                   req.get("data"), timeout=req.get("timeout", 30))}
+        except Exception as e:  # noqa: BLE001
+            return {"ok": False, "error": str(e)}
+'''
 
 
 def L(de, en):
@@ -259,8 +341,41 @@ def sup(method, path, data=None, timeout=60):
     return r.get("data") if isinstance(r, dict) else r
 
 
+def bridge_call(req, timeout=90):
+    """Anfrage an die AppDaemon-Hilfs-App (Datei rein, Antwort-Datei raus)."""
+    rid = "%d_%s" % (int(time.time() * 1000), secrets.token_hex(3))
+    tmp = os.path.join(_BRIDGE_DIR, ".req_" + rid + ".tmp")
+    dst = os.path.join(_BRIDGE_DIR, "req_" + rid + ".json")
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(req, f)
+    os.replace(tmp, dst)
+    rp = os.path.join(_BRIDGE_DIR, "resp_" + rid + ".json")
+    t0 = time.time()
+    while time.time() - t0 < timeout:
+        if os.path.exists(rp):
+            try:
+                with open(rp, encoding="utf-8") as f:
+                    r = json.load(f)
+            except ValueError:
+                time.sleep(0.2)
+                continue
+            os.remove(rp)
+            if r.get("ok"):
+                return r.get("result")
+            raise ApiError(r.get("error") or "Hilfs-App: Fehler")
+        time.sleep(0.3)
+    try:
+        os.remove(dst)
+    except OSError:
+        pass
+    raise ApiError(L("keine Antwort von der AppDaemon-Hilfs-App", "no answer from the AppDaemon helper app"))
+
+
 def core(method, path, data=None, timeout=30):
-    """Home-Assistant-REST-API ueber den Supervisor-Proxy."""
+    """Home-Assistant-REST-API ueber den Supervisor-Proxy (oder ueber die AppDaemon-Hilfs-App)."""
+    if _BRIDGE_DIR:
+        return bridge_call({"kind": "rest", "method": method, "path": path, "data": data, "timeout": timeout},
+                           timeout + 60)
     return http(method, SUP + "/core/api" + path, data, timeout)
 
 
@@ -268,6 +383,9 @@ class WS:
     """Sehr kleiner WebSocket-Client fuer die Home-Assistant-API (nur Standardbibliothek)."""
 
     def __init__(self):
+        self.bridge = bool(_BRIDGE_DIR)
+        if self.bridge:
+            return
         m = re.match(r"^https?://([^/:]+)(?::(\d+))?", SUP)
         host, port = m.group(1), int(m.group(2) or 80)
         self.s = socket.create_connection((host, port), timeout=30)
@@ -343,6 +461,8 @@ class WS:
                     return json.loads(data.decode("utf-8"))
 
     def call(self, typ, **kw):
+        if self.bridge:
+            return bridge_call({"kind": "ws", "type": typ, "data": kw})
         self.mid += 1
         msg = {"id": self.mid, "type": typ}
         msg.update(kw)
@@ -355,6 +475,8 @@ class WS:
                 return r.get("result")
 
     def close(self):
+        if self.bridge:
+            return
         try:
             self.s.close()
         except OSError:
@@ -755,21 +877,126 @@ def ensure_apps_yaml(apps_dir):
        else L("App in apps.yaml eingetragen", "App added to apps.yaml"))
 
 
-def remove_from_apps_yaml(apps_dir):
+def remove_from_apps_yaml(apps_dir, module="pv_control"):
     p = os.path.join(apps_dir, "apps.yaml")
     if not os.path.exists(p):
         return
-    with open(p, encoding="utf-8") as f:
+    with open(p, encoding="utf-8", newline="") as f:
         lines = f.read().split("\n")
     out, skip = [], False
     for i, ln in enumerate(lines):
         if re.match(r"^[A-Za-z0-9_]+:\s*$", ln):
             nxt = "\n".join(lines[i + 1:i + 4])
-            skip = bool(re.search(r"module:\s*pv_control\b", nxt))
+            skip = bool(re.search(r"module:\s*" + module + r"\b", nxt))
         if not skip:
             out.append(ln)
-    with open(p, "w", encoding="utf-8") as f:
+    with open(p, "w", encoding="utf-8", newline="") as f:
         f.write("\n".join(out))
+
+
+# ---------------------------------------------------------------------------
+# Zugriff auf die Home-Assistant-API (direkt oder ueber AppDaemon)
+# ---------------------------------------------------------------------------
+def _bridge_alive(io_dir, max_age=10):
+    try:
+        with open(os.path.join(io_dir, "alive")) as f:
+            return time.time() - float(f.read().strip() or 0) < max_age
+    except (OSError, ValueError):
+        return False
+
+
+def remove_core_bridge(apps_dir):
+    global _BRIDGE_DIR
+    _BRIDGE_DIR = None
+    d = os.path.join(apps_dir, BRIDGE_APP)
+    try:
+        p = os.path.join(apps_dir, "apps.yaml")
+        if os.path.exists(p):
+            with open(p, encoding="utf-8", newline="") as f:
+                txt = f.read()
+            if BRIDGE_BLOCK in txt:
+                with open(p, "w", encoding="utf-8", newline="") as f:
+                    f.write(txt.replace(BRIDGE_BLOCK, "", 1))
+            elif re.search(r"module:\s*" + BRIDGE_APP + r"\b", txt):
+                remove_from_apps_yaml(apps_dir, BRIDGE_APP)
+        shutil.rmtree(d, ignore_errors=True)
+    except OSError:
+        pass
+
+
+def ensure_core_access(apps_dir):
+    """Das Add-on 'Terminal & SSH' darf die Home-Assistant-API nicht benutzen (HTTP 401). Dann richtet der
+    Installer voruebergehend eine kleine Hilfs-App in AppDaemon ein, die die Anfragen ausfuehrt."""
+    global _BRIDGE_DIR
+    if not os.environ.get("MARSTEK_FORCE_BRIDGE"):
+        try:
+            http("GET", SUP + "/core/api/config", timeout=20)
+            return True
+        except ApiError as e:
+            if " 401" not in str(e) and " 403" not in str(e):
+                warn(L(f"Home Assistant antwortet nicht ({e}).", f"Home Assistant does not answer ({e})."))
+                return False
+    if DRY:
+        ok(L("(Testlauf) Zugriff auf Home Assistant wuerde ueber eine AppDaemon-Hilfs-App laufen",
+             "(dry run) access to Home Assistant would go through an AppDaemon helper app"))
+        return False
+    say(L("  Dieses Terminal darf Home Assistant nicht direkt einrichten - das uebernimmt kurz eine Hilfs-App "
+          "in AppDaemon ...", "  This terminal may not configure Home Assistant directly - an AppDaemon helper "
+          "app does it for a moment ..."))
+    d = os.path.join(apps_dir, BRIDGE_APP)
+    io_dir = os.path.join(d, "io")
+    os.makedirs(io_dir, exist_ok=True)
+    for fn in os.listdir(io_dir):
+        try:
+            os.remove(os.path.join(io_dir, fn))
+        except OSError:
+            pass
+    with open(os.path.join(d, BRIDGE_APP + ".py"), "w", encoding="utf-8") as f:
+        f.write(BRIDGE_CODE)
+    shutil.copyfile(os.path.abspath(__file__), os.path.join(d, "ha_setup.job"))
+    p = os.path.join(apps_dir, "apps.yaml")
+    txt = read(p) if os.path.exists(p) else ""
+    if not re.search(r"module:\s*" + BRIDGE_APP + r"\b", txt):
+        with open(p, "a", encoding="utf-8", newline="") as f:
+            f.write(BRIDGE_BLOCK)
+    atexit.register(remove_core_bridge, apps_dir)
+    start_or_restart(ADDON_APPDAEMON, "AppDaemon")
+    t0 = time.time()
+    restarted = False
+    while not _bridge_alive(io_dir):
+        if not restarted and time.time() - t0 > 45:
+            start_or_restart(ADDON_APPDAEMON, "AppDaemon", restart=True)
+            restarted = True
+        if time.time() - t0 > 240:
+            warn(L("Die AppDaemon-Hilfs-App startet nicht - Home Assistant kann nicht automatisch eingerichtet werden.",
+                   "The AppDaemon helper app does not start - Home Assistant cannot be configured automatically."))
+            return False
+        time.sleep(2)
+    _BRIDGE_DIR = io_dir
+    try:
+        core("GET", "/config")
+    except ApiError as e:
+        warn(L(f"Hilfs-App: kein Zugriff auf Home Assistant ({e}).", f"Helper app: no access to Home Assistant ({e})."))
+        _BRIDGE_DIR = None
+        return False
+    ok(L("Zugriff auf Home Assistant ueber AppDaemon", "Access to Home Assistant via AppDaemon"))
+    return True
+
+
+def _mqtt_flows():
+    """Laufende Einrichtungs-Ablaeufe der MQTT-Integration (z. B. von Mosquitto entdeckt)."""
+    try:
+        ws = WS()
+        try:
+            flows = ws.call("config_entries/flow/progress") or []
+        finally:
+            ws.close()
+    except (ApiError, OSError):
+        try:
+            flows = core("GET", "/config/config_entries/flow") or []
+        except ApiError:
+            flows = []
+    return [f for f in flows if isinstance(f, dict) and f.get("handler") == "mqtt"]
 
 
 # ---------------------------------------------------------------------------
@@ -789,10 +1016,9 @@ def ensure_mqtt_integration(login):
         return True
     flow = None
     try:
-        for f in core("GET", "/config/config_entries/flow") or []:
-            if f.get("handler") == "mqtt":
-                flow = core("POST", f"/config/config_entries/flow/{f['flow_id']}", {})
-                break
+        for f in _mqtt_flows():
+            flow = core("POST", f"/config/config_entries/flow/{f['flow_id']}", {})
+            break
     except ApiError:
         flow = None
     try:
@@ -1290,7 +1516,10 @@ def ensure_fold_row(ws):
         ok(L("(Testlauf) fold-entity-row wuerde installiert", "(dry run) fold-entity-row would be installed"))
         return
     try:
+        global NEED_HA_RESTART
         dst = os.path.join(ha_config_dir(), FOLD_ROW_REL)
+        if not os.path.isdir(os.path.join(ha_config_dir(), "www")):
+            NEED_HA_RESTART = True  # /local gibt es erst nach einem Neustart von Home Assistant
         os.makedirs(os.path.dirname(dst), exist_ok=True)
         with urllib.request.urlopen(FOLD_ROW_URL, timeout=60) as r:
             data = r.read()
@@ -1439,6 +1668,7 @@ def do_uninstall():
                      f"Befehle mehr (sie bleiben im zuletzt gesetzten Zustand bzw. fallen nach 5 min auf Stopp).",
                      f"Remove Marstek control from {app_dir}? The batteries will not get commands any more."), False):
         return
+    ensure_core_access(apps)
     arc = shutil.make_archive(os.path.join(ha_config_dir(), "marstek-venus-backup-" + time.strftime("%Y%m%d_%H%M%S")),
                               "gztar", app_dir)
     ok(L(f"Sicherung: {arc}", f"Backup: {arc}"))
@@ -1491,6 +1721,7 @@ def main():
     template = read(os.path.join(APP_SRC, "pv_config.py"))
 
     if a.dashboard:
+        ensure_core_access(apps)
         ws = WS()
         ensure_fold_row(ws)
         install_dashboard(ws, read(os.path.join(app_dir, "pv_config.py")), app_dir, update=False)
@@ -1511,6 +1742,7 @@ def main():
                  "password": secrets.token_urlsafe(18)}
     setup_mosquitto(login)
     setup_appdaemon()
+    ensure_core_access(apps)
 
     # 2) Einstellungen ---------------------------------------------------
     if update:
@@ -1608,6 +1840,18 @@ def main():
         vals = config_values(cfg_text)
         verify([bat_index(n) for n in batteries_from_config(cfg_text, app_dir)],
                vals.get("HA_EXPORT_PREFIX") or "marstekvenus")
+
+    remove_core_bridge(apps)
+    if NEED_HA_RESTART and not DRY:
+        say(L("  Home Assistant wird einmal neu gestartet, damit das Dashboard alle Teile laden kann ...",
+              "  Restarting Home Assistant once so the dashboard can load all parts ..."))
+        try:
+            sup("POST", "/core/restart", timeout=120)
+            ok(L("Home Assistant startet neu (etwa 1 Minute)", "Home Assistant is restarting (about 1 minute)"))
+        except ApiError as e:
+            warn(L(f"Neustart nicht moeglich ({e}) - bitte Home Assistant einmal neu starten "
+                   f"(Einstellungen -> System -> Neu starten).",
+                   f"Restart not possible ({e}) - please restart Home Assistant once (Settings -> System -> Restart)."))
 
     head(L("Fertig", "Done"))
     if config_values(cfg_text).get("READ_ONLY"):

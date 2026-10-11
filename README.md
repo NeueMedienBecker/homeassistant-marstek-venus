@@ -59,6 +59,7 @@ Der Installer richtet alles selbst ein, ohne Fragen:
 - Er **sucht deine Batterien im WLAN** (Open API muss in der Marstek-App an sein) und übernimmt sie
 - Er **erkennt deinen Netz-Zähler** (Sensor für die Leistung am Hausanschluss)
 - Er legt das **Dashboard „Marstek"** in der Seitenleiste an und prüft zum Schluss, ob die Batterien Werte liefern
+- Bei einer Neuinstallation startet Home Assistant am Ende einmal neu (etwa 1 Minute)
 
 Nur wenn er etwas nicht eindeutig erkennt (keine Batterie gefunden, mehrere mögliche Zähler), fragt er nach –
 **Enter** übernimmt dann den Vorschlag. Wer lieber alles selbst angibt: Option --ask.

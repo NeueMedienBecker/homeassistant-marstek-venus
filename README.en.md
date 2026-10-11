@@ -58,6 +58,7 @@ The installer sets everything up without questions:
 - It **searches your Wi-Fi for batteries** (the Open API must be on in the Marstek app) and adds them
 - It **detects your grid meter** (sensor for the power at your grid connection)
 - It creates the **"Marstek" dashboard** in the sidebar and finally checks that the batteries deliver values
+- On a new installation Home Assistant restarts once at the end (about 1 minute)
 
 It only asks if something cannot be detected clearly (no battery found, several possible meters) –
 **Enter** accepts the suggestion. To answer everything yourself: option --ask.
