@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.2 (2026-10-11)
+
+### Behoben
+- Dashboard: Der Schalter „Nur beobachten“ stand an der falschen Stelle (Kachel „Konfigurationsfehler“ in der Übersicht) und fehlte unter Konfiguration → Hauptschalter & Batterien. Jetzt dort als Zeile, in der Übersicht als Kachel, solange er an ist.
+- Dashboard: Werte, die es nur per Modbus gibt (Wechselrichter-Status, Spannung, MOS-Temperaturen), werden bei WLAN-Batterien ausgeblendet statt „Entität nicht gefunden“ zu zeigen.
+- Nach dem Update das Dashboard neu erzeugen: Installer mit --dashboard ausführen.
+
 ## 2.0.1 (2026-10-11)
 
 ### Behoben

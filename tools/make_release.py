@@ -140,6 +140,8 @@ def fix40_config(src):
 
 
 RO_ROW = {"entity": "switch.marstek_read_only", "name": "Nur beobachten (keine Befehle an die Batterien)"}
+RO_TILE = {"type": "tile", "entity": "switch.marstek_read_only", "name": "Nur beobachten", "icon": "mdi:eye-outline",
+           "color": "orange", "visibility": [{"condition": "state", "entity": "switch.marstek_read_only", "state": "on"}]}
 RO_BANNER = {
     "type": "conditional",
     "conditions": [{"condition": "state", "entity": "switch.marstek_read_only", "state": "on"}],
@@ -152,35 +154,72 @@ RO_BANNER = {
 
 
 def fix40_dashboard(cfg):
+    """Schalter 'Nur beobachten' als Zeile unter dem Hauptschalter (Konfiguration), Kachel in der Uebersicht
+    (nur sichtbar, wenn an) und Hinweis-Banner. Repariert auch eine fehlerhafte fruehere Einfuegung."""
+    def walk(o, key=None):
+        if isinstance(o, dict):
+            for k, v in o.items():
+                walk(v, k)
+        elif isinstance(o, list):
+            # alte, fehlerhafte Einfuegung (Zeile ohne "type" in einer Kartenliste) entfernen
+            if key == "cards":
+                o[:] = [it for it in o if not (isinstance(it, dict) and "type" not in it)]
+            for k, it in enumerate(list(o)):
+                eid = it if isinstance(it, str) else (it.get("entity") if isinstance(it, dict) else None)
+                if eid == "switch.marstek_control_enable":
+                    nxt = o[k + 1] if k + 1 < len(o) else None
+                    nxt_eid = nxt.get("entity") if isinstance(nxt, dict) else nxt
+                    if nxt_eid != "switch.marstek_read_only":
+                        if key == "entities":
+                            o.insert(k + 1, dict(RO_ROW))
+                        elif key == "cards" and isinstance(it, dict) and it.get("type") == "tile":
+                            o.insert(k + 1, json.loads(json.dumps(RO_TILE)))
+                    break
+            for it in o:
+                walk(it, key)
+
+    walk(cfg)
     s = json.dumps(cfg, ensure_ascii=False)
-    if "switch.marstek_read_only" in s:
-        return cfg
-    done = []
+    if "switch.marstek_read_only" not in s:
+        raise SystemExit("ANKER NICHT GEFUNDEN: switch.marstek_control_enable im Dashboard")
+    v0 = cfg["views"][0]
+    if "Beobachtungsmodus" not in json.dumps(v0, ensure_ascii=False):
+        if v0.get("sections"):
+            cards = v0["sections"][0].setdefault("cards", [])
+            pos = 1 if cards and cards[0].get("type") == "heading" else 0
+            cards.insert(pos, json.loads(json.dumps(RO_BANNER)))
+        else:
+            v0.setdefault("cards", []).insert(0, json.loads(json.dumps(RO_BANNER)))
+    return cfg
+
+
+MODBUS_ONLY = re.compile(r"^sensor\.marstekvenus_(\d+)_(inverter_state|battery_voltage|temp_mos1|temp_mos2)$")
+
+
+def fix41_dashboard(cfg):
+    """Werte, die es nur per Modbus gibt (Wechselrichter-Status, Spannung, MOS-Temperaturen), nur zeigen,
+    wenn die Batterie gerade per Modbus angebunden ist - sonst 'Entitaet nicht gefunden' bei WLAN-Batterien."""
+    def wrap(row):
+        eid = row.get("entity") if isinstance(row, dict) else row
+        m = MODBUS_ONLY.match(eid or "")
+        if not m:
+            return row
+        return {"type": "conditional",
+                "conditions": [{"condition": "state", "entity": f"sensor.pv_battery{m.group(1)}_comm_mode",
+                                "state": "Modbus"}],
+                "row": row if isinstance(row, dict) else {"entity": row}}
 
     def walk(o):
         if isinstance(o, dict):
+            if o.get("type") == "entities" and isinstance(o.get("entities"), list):
+                o["entities"] = [wrap(r) for r in o["entities"]]
             for v in o.values():
                 walk(v)
         elif isinstance(o, list):
-            for k, it in enumerate(list(o)):
-                eid = it if isinstance(it, str) else (it.get("entity") if isinstance(it, dict) else None)
-                if eid == "switch.marstek_control_enable" and not done:
-                    o.insert(k + 1, dict(RO_ROW))
-                    done.append(1)
-                    return
             for it in o:
                 walk(it)
 
     walk(cfg)
-    if not done:
-        raise SystemExit("ANKER NICHT GEFUNDEN: switch.marstek_control_enable im Dashboard")
-    v0 = cfg["views"][0]
-    if v0.get("sections"):
-        cards = v0["sections"][0].setdefault("cards", [])
-        pos = 1 if cards and cards[0].get("type") == "heading" else 0
-        cards.insert(pos, json.loads(json.dumps(RO_BANNER)))
-    else:
-        v0.setdefault("cards", []).insert(0, json.loads(json.dumps(RO_BANNER)))
     return cfg
 
 
@@ -288,7 +327,7 @@ def apply_fix40_repo():
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix40_dashboard(json.loads(rd(p))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -307,7 +346,7 @@ def main():
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix40_dashboard(cfg)
+    cfg = fix41_dashboard(fix40_dashboard(cfg))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

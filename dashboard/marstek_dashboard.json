@@ -60,8 +60,18 @@
        "features_position": "inline"
       },
       {
+       "type": "tile",
        "entity": "switch.marstek_read_only",
-       "name": "Nur beobachten (keine Befehle an die Batterien)"
+       "name": "Nur beobachten",
+       "icon": "mdi:eye-outline",
+       "color": "orange",
+       "visibility": [
+        {
+         "condition": "state",
+         "entity": "switch.marstek_read_only",
+         "state": "on"
+        }
+       ]
       },
       {
        "type": "tile",
@@ -469,12 +479,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_1_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery1_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_1_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_1_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery1_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_1_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -497,12 +527,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_1_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery1_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_1_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_1_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery1_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_1_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -709,12 +759,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_2_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery2_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_2_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_2_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery2_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_2_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -737,12 +807,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_2_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery2_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_2_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_2_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery2_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_2_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -949,12 +1039,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_3_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery3_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_3_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_3_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery3_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_3_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -977,12 +1087,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_3_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery3_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_3_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_3_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery3_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_3_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -1189,12 +1319,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_4_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery4_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_4_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_4_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery4_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_4_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -1217,12 +1367,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_4_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery4_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_4_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_4_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery4_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_4_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -1429,12 +1599,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_5_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery5_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_5_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_5_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery5_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_5_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -1457,12 +1647,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_5_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery5_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_5_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_5_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery5_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_5_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -1676,12 +1886,32 @@
          "name": "Anbindung (Auswahl)"
         },
         {
-         "entity": "sensor.marstekvenus_6_inverter_state",
-         "name": "Wechselrichter-Status"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery6_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_6_inverter_state",
+          "name": "Wechselrichter-Status"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_6_battery_voltage",
-         "name": "Spannung"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery6_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_6_battery_voltage",
+          "name": "Spannung"
+         }
         },
         {
          "type": "section",
@@ -1704,12 +1934,32 @@
          "name": "Temp. intern"
         },
         {
-         "entity": "sensor.marstekvenus_6_temp_mos1",
-         "name": "Temp. MOS1"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery6_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_6_temp_mos1",
+          "name": "Temp. MOS1"
+         }
         },
         {
-         "entity": "sensor.marstekvenus_6_temp_mos2",
-         "name": "Temp. MOS2"
+         "type": "conditional",
+         "conditions": [
+          {
+           "condition": "state",
+           "entity": "sensor.pv_battery6_comm_mode",
+           "state": "Modbus"
+          }
+         ],
+         "row": {
+          "entity": "sensor.marstekvenus_6_temp_mos2",
+          "name": "Temp. MOS2"
+         }
         }
        ],
        "grid_options": {
@@ -1885,6 +2135,10 @@
         {
          "entity": "switch.marstek_control_enable",
          "name": "Regelung aktiv (Hauptschalter)"
+        },
+        {
+         "entity": "switch.marstek_read_only",
+         "name": "Nur beobachten (keine Befehle an die Batterien)"
         },
         {
          "type": "custom:fold-entity-row",
