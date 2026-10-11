@@ -1501,6 +1501,39 @@ def auto_setup(tv):
     return bcfg, comm, ps, read_only
 
 
+
+def auto_add_batteries(cfg_text, app_dir, template_vals):
+    """Update: Batterien mit Open API, die noch nicht eingetragen sind, automatisch ergaenzen.
+    Nur wenn alle vorhandenen Batterien ueber WLAN angebunden sind (sonst waere eine neu gefundene IP
+    vielleicht eine schon per Modbus eingetragene Batterie). Rueckgabe: (cfg_text, Anzahl neu)."""
+    bats = batteries_from_config(cfg_text, app_dir)
+    if not bats or any(not (b.get("api_host") or "").strip() for b in bats.values()):
+        return cfg_text, 0
+    say(L("  Suche nach neuen Batterien mit Open API (bis zu 30 Sekunden) ...",
+          "  Looking for new batteries with Open API (up to 30 seconds) ..."))
+    known = {str(b.get("api_host")).strip() for b in bats.values()}
+    known |= {str(b.get("modbus_host") or "").strip() for b in bats.values()}
+    found = [d for d in discover_marstek() if d["ip"] not in known]
+    if not found:
+        ok(L("Keine neuen Batterien", "No new batteries"))
+        return cfg_text, 0
+    vals = config_values(cfg_text)
+    cfg = dict(vals.get("BATTERY_CONFIG") or {})
+    proto = dict(next(iter(cfg.values()), {}) or next(iter((template_vals.get("BATTERY_CONFIG") or {}).values()), {}))
+    comm = {}
+    n = max([bat_index(k) for k in bats] + [0])
+    for d in found:
+        n += 1
+        b = dict(proto)
+        b.update({"enabled": True, "comm_mode": "api", "modbus_host": "", "api_host": d["ip"], "port": 502,
+                  "unit": 1, "api_port": 30000})
+        cfg[f"battery{n}"] = b
+        comm[f"BATTERY{n}_COMM"] = "API"
+        ok(L(f"Neue Batterie Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}",
+             f"New battery Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}"))
+    return config_set(cfg_text, dict(BATTERY_CONFIG=cfg, **comm)), len(found)
+
+
 # ---------------------------------------------------------------------------
 # Dateien schreiben
 # ---------------------------------------------------------------------------
@@ -1787,6 +1820,9 @@ def main():
         old_dflt = read(dflt_path) if os.path.exists(dflt_path) else None
         cfg_text, carried = config_merge(old_cfg, template, old_dflt)
         ok(L(f"{len(carried)} eigene Einstellungen uebernommen", f"{len(carried)} own settings kept"))
+        added = 0
+        if not a.reconfigure:
+            cfg_text, added = auto_add_batteries(cfg_text, app_dir, config_values(template))
         if a.reconfigure:
             vals = config_values(cfg_text)
             bcfg, comm = ask_batteries(vals)
@@ -1799,6 +1835,7 @@ def main():
             cfg_text = config_set(cfg_text, dict(BATTERY_CONFIG=bcfg, POWER_SENSOR=ps, READ_ONLY=read_only, **comm))
     else:
         head(L("Neuinstallation", "New installation"))
+        added = 0
         tv = config_values(template)
         if a.ask:
             bcfg, comm = ask_batteries(tv)
@@ -1860,7 +1897,7 @@ def main():
     try:
         ws = WS()
         ensure_fold_row(ws)
-        url = install_dashboard(ws, cfg_text, app_dir, update)
+        url = install_dashboard(ws, cfg_text, app_dir, update and not (update and added))
         ws.close()
     except (ApiError, OSError) as e:
         url = DASH_URL

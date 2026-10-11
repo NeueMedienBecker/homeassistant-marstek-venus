@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.4 (2026-10-11)
+
+### Neu
+- Update: Neue WLAN-Batterien (Open API) werden beim Update automatisch gefunden und ergaenzt, das Dashboard wird dann ohne Rueckfrage neu erzeugt. Gilt nur, wenn alle vorhandenen Batterien ueber WLAN angebunden sind; sonst Installer mit --reconfigure.
+
 ## 2.0.3 (2026-10-11)
 
 ### Behoben
