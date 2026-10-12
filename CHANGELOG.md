@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.6 (2026-10-12)
+
+### Neu
+- Beim Update fragt der Installer: Einstellungen behalten oder alles neu einrichten (Batterien, Zaehler, Dashboard-Werte loeschen, mit Sicherung). Ohne Frage: Option --fresh.
+
+### Behoben
+- Im Dashboard geaenderte IP-Adressen wurden bei der Suche nach neuen Batterien nicht beruecksichtigt (doppelte Batterien).
+
 ## 2.0.5 (2026-10-11)
 
 ### Neu

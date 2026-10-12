@@ -84,7 +84,8 @@ If the battery does not answer during the installer's test, the Open API is usua
 
 ## Update
 
-Just run **the same command again**. Your settings (batteries, IPs, meter, all values changed in the
+Just run **the same command again**. The installer then asks whether to keep your settings (Enter)
+or to set up everything afresh. Your settings (batteries, IPs, meter, all values changed in the
 dashboard) are kept; every replaced file is backed up in the *backup* folder first. The dashboard is only
 replaced if you confirm.
 
@@ -94,6 +95,7 @@ replaced if you confirm.
 
 | Option | Effect |
 |---|---|
+| --fresh | fresh setup: delete batteries, meter and dashboard values (with backup) |
 | --meter | pick the grid meter again only (e.g. after setting up the meter) |
 | --reconfigure | ask batteries and grid meter again (e.g. RS485 adapters, other meter) |
 | --ask | new installation with all questions instead of automatic |

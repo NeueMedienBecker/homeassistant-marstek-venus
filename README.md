@@ -85,7 +85,8 @@ Antwortet die Batterie beim Test im Installer gar nicht, ist die Open API meist 
 
 ## Update
 
-Einfach **denselben Befehl erneut** im Terminal ausführen. Deine Einstellungen (Batterien, IPs, Zähler,
+Einfach **denselben Befehl erneut** im Terminal ausführen. Der Installer fragt dann, ob die
+Einstellungen bleiben sollen (Enter) oder ob alles neu eingerichtet werden soll. Deine Einstellungen (Batterien, IPs, Zähler,
 alle im Dashboard geänderten Werte) bleiben erhalten; von allen ersetzten Dateien wird vorher eine
 Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du es bestätigst.
 
@@ -95,6 +96,7 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 
 | Option | Wirkung |
 |---|---|
+| --fresh | alles neu einrichten: Batterien, Zähler und Dashboard-Werte löschen (mit Sicherung) |
 | --meter | nur den Netz-Zähler neu wählen (z. B. nachdem der Lesekopf eingerichtet wurde) |
 | --reconfigure | Batterien und Netz-Zähler neu abfragen (z. B. RS485-Adapter, anderer Zähler) |
 | --ask | Neuinstallation mit allen Fragen statt automatisch |

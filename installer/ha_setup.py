@@ -1413,7 +1413,7 @@ def auto_grid_sensor():
     return None, cands
 
 
-def auto_setup(tv):
+def auto_setup(tv, ignore_busy=False):
     """Batterien und Netz-Zaehler ohne Rueckfragen einrichten; gefragt wird nur, was sich nicht
     erkennen laesst. Rueckgabe: (BATTERY_CONFIG, BATTERYn_COMM, POWER_SENSOR, READ_ONLY)."""
     head(L("Batterien", "Batteries"))
@@ -1480,6 +1480,10 @@ def auto_setup(tv):
         ps = {"enabled": True, "entity": GRID_MISSING, "invert": False}
 
     read_only = False
+    if busy and ignore_busy:
+        hint(L("Sollwerte stammen noch von der bisherigen Installation - kein Beobachtungsmodus noetig.",
+               "Setpoints still come from the previous installation - no observe mode needed."))
+        busy = []
     if busy:
         read_only = True
         warn(L(f"Venus {', '.join(map(str, busy))} wird gerade von einer anderen Steuerung geregelt.",
@@ -1513,7 +1517,13 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
           "  Looking for new batteries with Open API (up to 30 seconds) ..."))
     known = {str(b.get("api_host")).strip() for b in bats.values()}
     known |= {str(b.get("modbus_host") or "").strip() for b in bats.values()}
-    found = [d for d in discover_marstek() if d["ip"] not in known]
+    known |= set(override_hosts(app_dir))
+    seen = set()
+    found = []
+    for d in discover_marstek():
+        if d["ip"] not in known and d["ip"] not in seen:
+            seen.add(d["ip"])
+            found.append(d)
     if not found:
         ok(L("Keine neuen Batterien", "No new batteries"))
         return cfg_text, 0
@@ -1581,6 +1591,44 @@ def decide_read_only(cfg_text, app_dir, ps):
         return True
     return not ask_yes(L("Beobachtungsmodus ausschalten (die Steuerung regelt dann die Batterien)?",
                          "Switch off observe mode (the control then drives the batteries)?"), True)
+
+
+
+def override_hosts(app_dir):
+    """IP-Adressen, die im Dashboard geaendert wurden (pv_mqtt_overrides.json)."""
+    out = []
+    p = os.path.join(app_dir or "", "pv_mqtt_overrides.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            for k, v in (json.load(f) or {}).items():
+                if k.endswith(("_API_HOST", "_MODBUS_HOST")) and isinstance(v, str) and v.strip():
+                    out.append(v.strip())
+    except (OSError, ValueError):
+        pass
+    return out
+
+
+def fresh_start(app_dir):
+    """Alles neu einrichten: Sicherung anlegen, Einstellungen loeschen (MQTT-Zugang bleibt)."""
+    head(L("Neu einrichten", "Fresh setup"))
+    if DRY:
+        ok(L(f"(Testlauf) {app_dir} wuerde gesichert und geleert", f"(dry run) {app_dir} would be backed up and emptied"))
+        return
+    arc = shutil.make_archive(os.path.join(ha_config_dir(), "marstek-venus-backup-" + time.strftime("%Y%m%d_%H%M%S")),
+                              "gztar", app_dir)
+    ok(L(f"Sicherung der alten Einstellungen: {arc}", f"Backup of the old settings: {arc}"))
+    for fn in os.listdir(app_dir):
+        if fn == "pv_mqtt_login.json":
+            continue
+        fp = os.path.join(app_dir, fn)
+        if os.path.isdir(fp):
+            shutil.rmtree(fp, ignore_errors=True)
+        else:
+            try:
+                os.remove(fp)
+            except OSError:
+                pass
+    ok(L("Alte Einstellungen, Batterien und Dashboard-Werte entfernt", "Old settings, batteries and dashboard values removed"))
 
 
 # ---------------------------------------------------------------------------
@@ -1806,7 +1854,7 @@ def do_uninstall():
 
 
 def main():
-    global LANG, DRY, AUTO_YES
+    global LANG, DRY, AUTO_YES, NEED_HA_RESTART
     ap = argparse.ArgumentParser(description="Marstek Venus Steuerung - Einrichtung")
     ap.add_argument("--lang", choices=("de", "en"))
     ap.add_argument("--dry-run", action="store_true", help="nichts veraendern, nur zeigen")
@@ -1814,6 +1862,7 @@ def main():
     ap.add_argument("--dashboard", action="store_true", help="nur das Dashboard neu erzeugen")
     ap.add_argument("--reconfigure", action="store_true", help="Batterien und Zaehler neu abfragen")
     ap.add_argument("--meter", action="store_true", help="nur den Netz-Zaehler neu waehlen")
+    ap.add_argument("--fresh", action="store_true", help="alles neu einrichten (alte Einstellungen loeschen, mit Sicherung)")
     ap.add_argument("--yes", action="store_true", help="alle Vorschlaege uebernehmen (Update ohne Rueckfragen)")
     ap.add_argument("--ask", action="store_true", help="Neuinstallation: alles einzeln abfragen statt automatisch")
     a = ap.parse_args()
@@ -1836,6 +1885,26 @@ def main():
     app_dir = existing or os.path.join(apps, APP_FOLDER_NAME)
     update = existing is not None
     template = read(os.path.join(APP_SRC, "pv_config.py"))
+    was_controlling = False
+    if update and not a.dashboard:
+        fresh = a.fresh
+        if not fresh and not AUTO_YES and not a.reconfigure and not a.meter:
+            head(L("Update", "Update"))
+            ok(L(f"Vorhandene Installation gefunden: {app_dir}", f"Existing installation found: {app_dir}"))
+            fresh = choose(L("Was soll passieren?", "What should happen?"), [
+                L("Update - alle Einstellungen behalten", "Update - keep all settings"),
+                L("Alles neu einrichten - Batterien, Zaehler und Dashboard-Werte loeschen (mit Sicherung)",
+                  "Fresh setup - delete batteries, meter and dashboard values (with backup)"),
+            ], 1) == 1
+        if fresh:
+            try:
+                was_controlling = not config_values(read(os.path.join(app_dir, "pv_config.py"))).get("READ_ONLY", False)
+            except (OSError, ValueError, SyntaxError):
+                was_controlling = False
+            fresh_start(app_dir)
+            if not DRY:
+                NEED_HA_RESTART = True  # alte Sensoren der geloeschten Batterien verschwinden erst nach Neustart
+                update = False
 
     if a.dashboard:
         ensure_core_access(apps)
@@ -1897,7 +1966,7 @@ def main():
             ps = ask_grid_sensor()
             read_only = False
         else:
-            bcfg, comm, ps, read_only = auto_setup(tv)
+            bcfg, comm, ps, read_only = auto_setup(tv, ignore_busy=was_controlling)
         values = dict(BATTERY_CONFIG=bcfg, POWER_SENSOR=ps, HA_ENTITY_ID_MAP={}, CONTROL_ENABLE=True,
                       READ_ONLY=read_only, **comm)
         cfg_text = config_set(template, values)
