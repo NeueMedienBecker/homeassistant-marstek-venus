@@ -254,6 +254,60 @@ def fix42_control(src):
     return out
 
 
+def fix43_control(src):
+    """FIX 43: Ladeleistung fuer BMS-Pflege / Notladung zaehlt nicht als Hausverbrauch - sonst entladen die
+    anderen Batterien (oder ein fremder Speicher), um die ladende Batterie zu fuettern."""
+    if "FIX 43" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 42:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 43: Ladeleistung von BMS-Pflege/Notladung wird aus dem Netzfluss herausgerechnet "
+                                "(andere Batterien entladen nicht, um die ladende Batterie zu fuettern).")
+    i = find(L, "ac_ctrl_now = 0.0")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "# FIX 43: Laden fuer BMS-Pflege / Notladung ist kein Hausverbrauch -> aus dem Netzfluss herausrechnen",
+        b + "_care_charge = 0.0",
+        b + "for _n in (bms_active | soc_safety_active):",
+        b + "    _st = states.get(_n) or {}",
+        b + "    if not _st.get('disabled') and not _st.get('err'):",
+        b + "        _care_charge += min(0.0, float(_st.get('ac', 0) or 0))  # ac < 0 = Laden",
+        b + "if _care_charge < 0:",
+        b + "    grid_flow += _care_charge",
+        "",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix44_control(src):
+    """FIX 44: Unbekannte Batterie (last_full_ts == 0, z.B. nach Neuinstallation) startet die BMS-Vollladung
+    nicht sofort aus dem Netz, sondern wartet wie jede faellige Batterie erst auf PV-Ueberschuss."""
+    if "FIX 44" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 43:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 44: Nach einer Neuinstallation wartet die BMS-Pflege erst auf PV-Ueberschuss "
+                                "(BMS_CARE_PV_WAIT_H), statt sofort aus dem Netz voll zu laden.")
+    i = find(L, 'last = float(bms.get("last_full_ts") or 0)')
+    # nur die Stelle in _bms_select_candidate (die erste nach "def _bms_select_candidate")
+    j = find(L, "def _bms_select_candidate(self, states):", startswith=True)
+    i = find(L, 'last = float(bms.get("last_full_ts") or 0)', start=j)
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "if last <= 0 and name in self.bms_state:",
+        b + "    # FIX 44: unbekannter Stand -> gilt als faellig, aber mit PV-Wartezeit (kein Sofort-Laden aus dem Netz)",
+        b + "    last = now_ts - FULL_CHARGE_INTERVAL_DAYS * 86400",
+        b + "    self.bms_state[name]['last_full_ts'] = last",
+        b + "    self._save_bms_state()",
+        b + "    self.log(f'BMS {name}: kein Vollladedatum bekannt -> faellig, wartet auf PV-Ueberschuss')",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
 def build_mqtt(src, version):
     L = src.split("\n")
     if any('"sw_version"' in x for x in L):
@@ -354,7 +408,7 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix42_control(fix40_control(t))), ("pv_mqtt.py", fix40_mqtt),
+    for fn, f in (("pv_control.py", lambda t: fix44_control(fix43_control(fix42_control(fix40_control(t))))), ("pv_mqtt.py", fix40_mqtt),
                   ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
@@ -373,7 +427,7 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))
+       fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))

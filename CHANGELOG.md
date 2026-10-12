@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.10 (2026-10-12)
+
+### Behoben
+- Laedt eine Batterie fuer die BMS-Pflege oder eine Notladung, wurde diese Ladeleistung als Hausverbrauch gewertet: die anderen Batterien (oder ein fremder Speicher) haben entladen, um die ladende Batterie zu fuettern. Diese Ladeleistung wird jetzt aus dem Netzfluss herausgerechnet.
+- Nach einer Neuinstallation startete die BMS-Pflege sofort mit einer Vollladung aus dem Netz. Jetzt wartet sie wie gewohnt erst auf PV-Ueberschuss (BMS_CARE_PV_WAIT_H).
+
 ## 2.0.9 (2026-10-12)
 
 ### Behoben

@@ -58,6 +58,8 @@ Aenderungen:
 - FIX 39: Version 2.0.0 (GitHub). Netz-Zaehler: POWER_SENSOR "invert" (Vorzeichen drehen) und kW-Werte automatisch in W.
 - FIX 40: Beobachtungsmodus READ_ONLY (nur lesen, keine Befehle an die Batterien), z. B. wenn noch eine andere Steuerung laeuft oder der Netz-Zaehler fehlt.
 - FIX 42: Beim Start werden HA-Sensoren von Batterien, die es nicht mehr gibt (Dashboard: Batterie loeschen), entfernt.
+- FIX 43: Ladeleistung von BMS-Pflege/Notladung wird aus dem Netzfluss herausgerechnet (andere Batterien entladen nicht, um die ladende Batterie zu fuettern).
+- FIX 44: Nach einer Neuinstallation wartet die BMS-Pflege erst auf PV-Ueberschuss (BMS_CARE_PV_WAIT_H), statt sofort aus dem Netz voll zu laden.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -78,7 +80,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.0"  # FIX 39
+PV_CONTROL_VERSION = "2.0.10"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -2167,6 +2169,12 @@ class PVControlApp(Hass):
                 self._bms_mark_cycle_done(name, now_ts, "soc already full")
                 continue
             last = float(bms.get("last_full_ts") or 0)
+            if last <= 0 and name in self.bms_state:
+                # FIX 44: unbekannter Stand -> gilt als faellig, aber mit PV-Wartezeit (kein Sofort-Laden aus dem Netz)
+                last = now_ts - FULL_CHARGE_INTERVAL_DAYS * 86400
+                self.bms_state[name]['last_full_ts'] = last
+                self._save_bms_state()
+                self.log(f'BMS {name}: kein Vollladedatum bekannt -> faellig, wartet auf PV-Ueberschuss')
             if last > 0 and (now_ts - last) < (FULL_CHARGE_INTERVAL_DAYS * 86400):
                 continue
             if not _bms_pv_ok:
@@ -2647,6 +2655,15 @@ class PVControlApp(Hass):
                 for _n, _b in self.bms_state.items():
                     if _b.get("safety_active"):
                         soc_safety_active.add(_n)
+
+            # FIX 43: Laden fuer BMS-Pflege / Notladung ist kein Hausverbrauch -> aus dem Netzfluss herausrechnen
+            _care_charge = 0.0
+            for _n in (bms_active | soc_safety_active):
+                _st = states.get(_n) or {}
+                if not _st.get('disabled') and not _st.get('err'):
+                    _care_charge += min(0.0, float(_st.get('ac', 0) or 0))  # ac < 0 = Laden
+            if _care_charge < 0:
+                grid_flow += _care_charge
 
             ac_ctrl_now = 0.0
             for n, st in states.items():
