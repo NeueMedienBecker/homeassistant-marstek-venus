@@ -57,6 +57,7 @@ Aenderungen:
 - FIX 38: API: zurueckgehaltene kleine Sollwert-Aenderungen werden bei der Auffrischung (<= 30 s) nachgeholt.
 - FIX 39: Version 2.0.0 (GitHub). Netz-Zaehler: POWER_SENSOR "invert" (Vorzeichen drehen) und kW-Werte automatisch in W.
 - FIX 40: Beobachtungsmodus READ_ONLY (nur lesen, keine Befehle an die Batterien), z. B. wenn noch eine andere Steuerung laeuft oder der Netz-Zaehler fehlt.
+- FIX 42: Beim Start werden HA-Sensoren von Batterien, die es nicht mehr gibt (Dashboard: Batterie loeschen), entfernt.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -1655,6 +1656,20 @@ class PVControlApp(Hass):
             name: cfg for name, cfg in BATTERY_CONFIG.items()
             if cfg.get("enabled")
         }
+
+        # FIX 42: Sensoren geloeschter Batterien entfernen (sonst bleiben sie bis zum HA-Neustart sichtbar)
+        try:
+            _keep = {str(int(BATTERY_META.get(_n, {}).get('idx', 0) or 0)) for _n in self.batteries}
+            _pat = re.compile(rf'^sensor\.(?:{re.escape(HA_EXPORT_PREFIX)}_(\d+)_|pv_battery(\d+)_comm_mode$|bms_battery(\d+)_phase$)')
+            for _eid in list((self.get_state() or {}).keys()):
+                _m = _pat.match(_eid)
+                if _m and (_m.group(1) or _m.group(2) or _m.group(3)) not in _keep:
+                    try:
+                        self.remove_entity(_eid)
+                    except Exception:
+                        pass
+        except Exception as _e:
+            self.log(f'FIX 42: alte Sensoren nicht entfernt ({_e})', level='WARNING')
 
         self.last_distribution = {name: 0 for name in self.batteries}
         self.mode_state        = None

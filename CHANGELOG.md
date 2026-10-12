@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.8 (2026-10-12)
+
+### Behoben
+- Batterie loeschen im Dashboard: Die Sensoren der geloeschten Batterie verschwinden jetzt sofort (vorher blieben sie bis zum Neustart von Home Assistant sichtbar, so dass das Loeschen wirkungslos aussah).
+
 ## 2.0.7 (2026-10-12)
 
 ### Behoben

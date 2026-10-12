@@ -223,6 +223,37 @@ def fix41_dashboard(cfg):
     return cfg
 
 
+def fix42_control(src):
+    """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
+    if "FIX 42" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 40:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 42: Beim Start werden HA-Sensoren von Batterien, die es nicht mehr gibt "
+                                "(Dashboard: Batterie loeschen), entfernt.")
+    i = find(L, "self.last_distribution = {name: 0 for name in self.batteries}")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "# FIX 42: Sensoren geloeschter Batterien entfernen (sonst bleiben sie bis zum HA-Neustart sichtbar)",
+        b + "try:",
+        b + "    _keep = {str(int(BATTERY_META.get(_n, {}).get('idx', 0) or 0)) for _n in self.batteries}",
+        b + "    _pat = re.compile(rf'^sensor\\.(?:{re.escape(HA_EXPORT_PREFIX)}_(\\d+)_|pv_battery(\\d+)_comm_mode$|bms_battery(\\d+)_phase$)')",
+        b + "    for _eid in list((self.get_state() or {}).keys()):",
+        b + "        _m = _pat.match(_eid)",
+        b + "        if _m and (_m.group(1) or _m.group(2) or _m.group(3)) not in _keep:",
+        b + "            try:",
+        b + "                self.remove_entity(_eid)",
+        b + "            except Exception:",
+        b + "                pass",
+        b + "except Exception as _e:",
+        b + "    self.log(f'FIX 42: alte Sensoren nicht entfernt ({_e})', level='WARNING')",
+        "",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
 def build_mqtt(src, version):
     L = src.split("\n")
     if any('"sw_version"' in x for x in L):
@@ -323,7 +354,8 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", fix40_control), ("pv_mqtt.py", fix40_mqtt), ("pv_config.py", fix40_config)):
+    for fn, f in (("pv_control.py", lambda t: fix42_control(fix40_control(t))), ("pv_mqtt.py", fix40_mqtt),
+                  ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
@@ -341,7 +373,7 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))
+       fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
