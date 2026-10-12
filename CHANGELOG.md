@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.9 (2026-10-12)
+
+### Behoben
+- Eine im Dashboard geloeschte Batterie wird beim naechsten Update wieder sauber angelegt (vorher blieb sie als geloescht markiert).
+
 ## 2.0.8 (2026-10-12)
 
 ### Behoben

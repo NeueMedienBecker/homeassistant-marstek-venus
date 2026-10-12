@@ -1531,8 +1531,26 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
     cfg = dict(vals.get("BATTERY_CONFIG") or {})
     proto = dict(next(iter(cfg.values()), {}) or next(iter((template_vals.get("BATTERY_CONFIG") or {}).values()), {}))
     comm = {}
-    n = max([bat_index(k) for k in bats] + [0])
+    # Dashboard-Verwaltung (pv_batteries.json): im Dashboard geloeschte Batterien stehen in "remove"
+    bfile = os.path.join(app_dir or "", "pv_batteries.json")
+    bo = {"add": {}, "remove": []}
+    try:
+        with open(bfile, encoding="utf-8") as f:
+            _d = json.load(f) or {}
+        bo = {"add": dict(_d.get("add") or {}), "remove": list(_d.get("remove") or [])}
+    except (OSError, ValueError):
+        pass
+    changed_bo = False
+    n = max([bat_index(k) for k in list(cfg) + list(bo["add"]) + bo["remove"]] + [0])
     for d in found:
+        # im Dashboard geloeschte Batterie mit derselben IP -> einfach wieder aktivieren
+        old = next((k for k in bo["remove"] if (cfg.get(k) or bo["add"].get(k) or {}).get("api_host") == d["ip"]), None)
+        if old:
+            bo["remove"].remove(old)
+            changed_bo = True
+            ok(L(f"Venus {bat_index(old)} wieder aktiviert: {d['ip']}  {d['device']}  FW {d['ver']}",
+                 f"Venus {bat_index(old)} re-enabled: {d['ip']}  {d['device']}  FW {d['ver']}"))
+            continue
         n += 1
         b = dict(proto)
         b.update({"enabled": True, "comm_mode": "api", "modbus_host": "", "api_host": d["ip"], "port": 502,
@@ -1541,6 +1559,9 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
         comm[f"BATTERY{n}_COMM"] = "API"
         ok(L(f"Neue Batterie Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}",
              f"New battery Venus {n}: {d['ip']}  {d['device']}  FW {d['ver']}"))
+    if changed_bo and not DRY:
+        with open(bfile, "w", encoding="utf-8") as f:
+            json.dump(bo, f, indent=2)
     return config_set(cfg_text, dict(BATTERY_CONFIG=cfg, **comm)), len(found)
 
 
