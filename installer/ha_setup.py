@@ -1955,8 +1955,8 @@ def main():
             ps = pick_grid_sensor(cur)
             read_only = decide_read_only(cfg_text, app_dir, ps)
             cfg_text = config_set(cfg_text, dict(POWER_SENSOR=ps, READ_ONLY=read_only))
-            if cur == GRID_MISSING and ps.get("entity") != GRID_MISSING:
-                added = 1  # Dashboard ohne Rueckfrage neu erzeugen (Hinweis-Karte raus)
+            if ps.get("entity") != cur:
+                added = 1  # Zaehler gewechselt: Dashboard ohne Rueckfrage neu erzeugen
     else:
         head(L("Neuinstallation", "New installation"))
         added = 0

@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.7 (2026-10-12)
+
+### Behoben
+- --meter: nach einem Zaehlerwechsel wird das Dashboard ohne Rueckfrage neu erzeugt.
+
 ## 2.0.6 (2026-10-12)
 
 ### Neu
