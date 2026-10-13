@@ -19,7 +19,7 @@ Everything else is set up in the included **"Marstek" dashboard** (the dashboard
 - **Multiple batteries** – power is split by state of charge; with little PV power only one battery is charged (more efficient), the order rotates
 - **Two connection paths per battery** – Modbus *or* Wi-Fi API *or* "Modbus, otherwise API" / "API, otherwise Modbus". A battery that answers on neither path gets no power share
 - **SoC protection** – a battery stuck at its minimum for too long is gently recharged (preferably with sun)
-- **BMS care** – regular full charge for cell balancing, one battery after the other, preferably with PV surplus
+- **BMS care** – regular full charge for cell balancing, one battery after the other, only with PV surplus (pauses when clouds come or at night)
 - **Safety** – implausible or stale meter values stop the batteries; main switch and switch per battery
 - **Dashboard** – overview with traffic lights, state of charge, power, energy *today / yesterday / this week*, all settings changeable live (no restart), add and delete batteries, save settings
 - **Firmware detection** – different Open API units per firmware (e.g. temperature, energy counters) are converted automatically

@@ -19,7 +19,7 @@ Alles Weitere stellst du bequem im mitgelieferten **Dashboard „Marstek"** ein.
 - **Mehrere Batterien** – Leistung wird nach Ladestand verteilt; bei wenig PV-Leistung wird gezielt nur eine Batterie geladen (effizienter), die Reihenfolge wechselt
 - **Zwei Anbindungen je Batterie** – Modbus *oder* WLAN-API *oder* „Modbus, sonst API" bzw. „API, sonst Modbus". Antwortet eine Batterie auf keinem Weg, bekommt sie keine Leistung zugeteilt
 - **SoC-Schutz / Notladung** – hängt eine Batterie zu lange am Minimum, wird sie sanft nachgeladen (bevorzugt mit Sonne)
-- **BMS-Pflege** – regelmäßige Vollladung zum Zellausgleich, eine Batterie nach der anderen, bevorzugt mit PV-Überschuss
+- **BMS-Pflege** – regelmäßige Vollladung zum Zellausgleich, eine Batterie nach der anderen, nur mit PV-Überschuss (pausiert bei Wolken und nachts)
 - **Sicherheit** – unplausible oder veraltete Zählerwerte stoppen die Batterien; Hauptschalter und Schalter je Batterie
 - **Dashboard** – Übersicht mit Ampel, Ladestand, Leistung, Energie *heute / gestern / diese Woche*, alle Einstellungen live änderbar (ohne Neustart), Batterien anlegen und löschen, Einstellungen sichern
 - **Firmware-Erkennung** – unterschiedliche Einheiten der Open API je Firmware (z. B. Temperatur, Energiezähler) werden automatisch umgerechnet

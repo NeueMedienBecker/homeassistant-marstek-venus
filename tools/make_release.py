@@ -223,6 +223,35 @@ def fix41_dashboard(cfg):
     return cfg
 
 
+def fix45_dashboard(cfg):
+    """FIX 45: im Batterien-Tab zeigen, wann die BMS-Pflege zuletzt lief und wann sie wieder ansteht."""
+    def walk(o):
+        if isinstance(o, dict):
+            if o.get("type") == "entities" and isinstance(o.get("entities"), list):
+                new = []
+                for r in o["entities"]:
+                    new.append(r)
+                    eid = r.get("entity") if isinstance(r, dict) else r
+                    m = re.match(r"^sensor\.bms_battery(\d+)_phase$", eid or "")
+                    if m and isinstance(r, dict) and r.get("type") is None:
+                        has = any(isinstance(x, dict) and x.get("attribute") == "next_due" and x.get("entity") == eid
+                                  for x in o["entities"])
+                        if not has:
+                            new.append({"type": "attribute", "entity": eid, "attribute": "last_full",
+                                        "name": "BMS-Pflege zuletzt", "icon": "mdi:calendar-check"})
+                            new.append({"type": "attribute", "entity": eid, "attribute": "next_due",
+                                        "name": "BMS-Pflege wieder faellig", "icon": "mdi:calendar-clock"})
+                o["entities"] = new
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+
+    walk(cfg)
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -302,6 +331,83 @@ def fix44_control(src):
         b + "    self.bms_state[name]['last_full_ts'] = last",
         b + "    self._save_bms_state()",
         b + "    self.log(f'BMS {name}: kein Vollladedatum bekannt -> faellig, wartet auf PV-Ueberschuss')",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix45_control(src):
+    """FIX 45: BMS-Vollladung nur aus PV-Ueberschuss (Budget je Zyklus, sonst Pause); die anderen Batterien
+    nehmen der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie (A_set einseitig korrigiert)."""
+    if "FIX 45" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 44:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 45: BMS-Pflege laedt nur mit dem PV-Ueberschuss, der gerade da ist (pausiert bei Wolken/nachts, "
+                                "nach BMS_CARE_PV_WAIT_H ohne Abschluss mit voller Leistung); geregelte Batterien nehmen "
+                                "der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie.")
+    # 1) echter Ueberschuss + einseitige A_set-Korrektur
+    i = find(L, "grid_flow += _care_charge")
+    assert L[i - 1].strip() == "if _care_charge < 0:"
+    b = ind(L[i - 1])
+    L[i] = L[i] + "  # FIX 45: nur noch fuer die PV-Erkennung"
+    L[i - 1:i - 1] = [
+        b + "# FIX 45: echter PV-Ueberschuss = -Netzfluss + alles, was gerade in Batterien geht",
+        b + "_ctrl_charge = 0.0",
+        b + "for _n, _st in states.items():",
+        b + "    if _n in bms_active or _n in soc_safety_active or _st.get('disabled') or _st.get('err'):",
+        b + "        continue",
+        b + "    _ctrl_charge += min(0.0, float(_st.get('ac', 0) or 0))",
+        b + "self._surplus_w = -float(actual_flow) - _ctrl_charge - _care_charge",
+    ]
+    i = find(L, "A_set = ac_ctrl_now + grid_flow")
+    b = ind(L[i])
+    L[i:i + 1] = [
+        b + "A_set = ac_ctrl_now + actual_flow",
+        b + "# FIX 45: andere Batterien entladen nicht fuer BMS-/Notladung - nehmen ihr aber auch den Ueberschuss nicht weg",
+        b + "if _care_charge < 0 and A_set > 0:",
+        b + "    A_set = max(A_set + _care_charge, 0.0)",
+    ]
+    # 2) _bms_apply: Budget / Pause
+    i = find(L, 'ok = self._bms_cmd(name, driver, "charge%d" % int(BMS_FORCE_CHARGE_W), 1, BMS_FORCE_CHARGE_W, 0)')
+    assert L[i - 1].strip() == "if driver:" and L[i + 1].strip() == "if ok:" and "BMS CHARGE set=" in L[i + 2]
+    b = ind(L[i - 1])
+    L[i - 1:i + 3] = [
+        b + "# FIX 45: nur mit PV-Ueberschuss laden, sonst pausieren; nach BMS_CARE_PV_WAIT_H ohne Abschluss volle Leistung",
+        b + "_w = int(BMS_FORCE_CHARGE_W)",
+        b + "_budget = None",
+        b + "if globals().get('BMS_CARE_REQUIRE_PV', True):",
+        b + "    if not bms.get('charging_since'):",
+        b + "        bms['charging_since'] = now_ts",
+        b + "        self._save_bms_state()",
+        b + "    _wait_s = float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600",
+        b + "    if (now_ts - float(bms.get('charging_since') or now_ts)) < _wait_s:",
+        b + "        _budget = float(getattr(self, '_surplus_w', 0.0) or 0.0)",
+        b + "        _w = int(min(float(BMS_FORCE_CHARGE_W), max(0.0, _budget)) // 50 * 50)",
+        b + "if driver:",
+        b + "    if _w < int(globals().get('BMS_CARE_MIN_W', 150)):",
+        b + "        self._bms_cmd(name, driver, 'pause', 0, 0, 0)",
+        b + "        verify_logs.append(f\"{name}: BMS CHARGE pausiert - kein PV-Ueberschuss ({(_budget or 0):.0f}W), wartet\")",
+        b + "    else:",
+        b + "        ok = self._bms_cmd(name, driver, 'charge%d' % _w, 1, _w, 0)",
+        b + "        if ok:",
+        b + "            verify_logs.append(f\"{name}: BMS CHARGE set={_w}W\" + (' (PV-Ueberschuss)' if _budget is not None else '') + f\" bis SoC>={FULL_CHARGE_SOC}%\")",
+    ]
+    i = find(L, 'bms["last_full_ts"]   = now_ts')
+    L.insert(i + 1, ind(L[i]) + "bms['charging_since'] = 0  # FIX 45")
+    i = find(L, '"min_soc_since", "safety_done", "safety_active"):')
+    L[i] = L[i].replace('"safety_active"):', '"safety_active", "charging_since"):')
+    # 3) HA-Sensor: letzte und naechste BMS-Pflege als Attribute
+    i = find(L, '"cooldown_until": self._fmt_ts(bms.get("cooldown_until")),')
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "# FIX 45: fuer das Dashboard - wann zuletzt, wann wieder faellig",
+        b + "'next_due': (self._fmt_ts(float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400)",
+        b + "             if float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400 > time.time()",
+        b + "             else 'faellig - wartet auf PV-Ueberschuss'),",
+        b + "'status': ({'idle': 'Bereitschaft', 'charging': 'Vollladung laeuft (nur mit PV-Ueberschuss)', 'hold': 'Haltephase (voll)'}",
+        b + "           .get(bms.get('phase', 'idle'), bms.get('phase', 'idle'))),",
     ]
     out = "\n".join(L)
     compile(out, "pv_control.py", "exec")
@@ -408,12 +514,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix44_control(fix43_control(fix42_control(fix40_control(t))))), ("pv_mqtt.py", fix40_mqtt),
+    for fn, f in (("pv_control.py", lambda t: fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))), ("pv_mqtt.py", fix40_mqtt),
                   ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -427,12 +533,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))
+       fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix41_dashboard(fix40_dashboard(cfg))
+    cfg = fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

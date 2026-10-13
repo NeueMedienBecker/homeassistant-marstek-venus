@@ -60,6 +60,7 @@ Aenderungen:
 - FIX 42: Beim Start werden HA-Sensoren von Batterien, die es nicht mehr gibt (Dashboard: Batterie loeschen), entfernt.
 - FIX 43: Ladeleistung von BMS-Pflege/Notladung wird aus dem Netzfluss herausgerechnet (andere Batterien entladen nicht, um die ladende Batterie zu fuettern).
 - FIX 44: Nach einer Neuinstallation wartet die BMS-Pflege erst auf PV-Ueberschuss (BMS_CARE_PV_WAIT_H), statt sofort aus dem Netz voll zu laden.
+- FIX 45: BMS-Pflege laedt nur mit dem PV-Ueberschuss, der gerade da ist (pausiert bei Wolken/nachts, nach BMS_CARE_PV_WAIT_H ohne Abschluss mit voller Leistung); geregelte Batterien nehmen der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -80,7 +81,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.10"  # FIX 39
+PV_CONTROL_VERSION = "2.0.11"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1912,7 +1913,7 @@ class PVControlApp(Hass):
             for name in self.batteries.keys():
                 if name in st and isinstance(st[name], dict):
                     for k in ("last_full_ts", "phase", "holding_until", "cooldown_until",
-                              "min_soc_since", "safety_done", "safety_active"):
+                              "min_soc_since", "safety_done", "safety_active", "charging_since"):
                         if k in st[name]:
                             self.bms_state[name][k] = st[name][k]
             try:
@@ -2228,6 +2229,7 @@ class PVControlApp(Hass):
                 bms["holding_until"]  = now_ts + FULL_CHARGE_MIN_HOLD_S
                 bms["cooldown_until"] = bms["holding_until"] + ALLOW_DISCHARGE_AFTER_S
                 bms["last_full_ts"]   = now_ts
+                bms['charging_since'] = 0  # FIX 45
                 write_logs.append(f"{name}: BMS erreicht FULL_CHARGE_SOC={FULL_CHARGE_SOC}%, starte HOLD")
                 self._save_bms_state()
 
@@ -2249,10 +2251,25 @@ class PVControlApp(Hass):
             self.bms_today_counter += 1
             self._save_bms_state()
 
+        # FIX 45: nur mit PV-Ueberschuss laden, sonst pausieren; nach BMS_CARE_PV_WAIT_H ohne Abschluss volle Leistung
+        _w = int(BMS_FORCE_CHARGE_W)
+        _budget = None
+        if globals().get('BMS_CARE_REQUIRE_PV', True):
+            if not bms.get('charging_since'):
+                bms['charging_since'] = now_ts
+                self._save_bms_state()
+            _wait_s = float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600
+            if (now_ts - float(bms.get('charging_since') or now_ts)) < _wait_s:
+                _budget = float(getattr(self, '_surplus_w', 0.0) or 0.0)
+                _w = int(min(float(BMS_FORCE_CHARGE_W), max(0.0, _budget)) // 50 * 50)
         if driver:
-            ok = self._bms_cmd(name, driver, "charge%d" % int(BMS_FORCE_CHARGE_W), 1, BMS_FORCE_CHARGE_W, 0)
-            if ok:
-                verify_logs.append(f"{name}: BMS CHARGE set={BMS_FORCE_CHARGE_W}W bis SoC>={FULL_CHARGE_SOC}%")
+            if _w < int(globals().get('BMS_CARE_MIN_W', 150)):
+                self._bms_cmd(name, driver, 'pause', 0, 0, 0)
+                verify_logs.append(f"{name}: BMS CHARGE pausiert - kein PV-Ueberschuss ({(_budget or 0):.0f}W), wartet")
+            else:
+                ok = self._bms_cmd(name, driver, 'charge%d' % _w, 1, _w, 0)
+                if ok:
+                    verify_logs.append(f"{name}: BMS CHARGE set={_w}W" + (' (PV-Ueberschuss)' if _budget is not None else '') + f" bis SoC>={FULL_CHARGE_SOC}%")
         return True
 
     # -------------------------------------------------------------------------
@@ -2662,8 +2679,15 @@ class PVControlApp(Hass):
                 _st = states.get(_n) or {}
                 if not _st.get('disabled') and not _st.get('err'):
                     _care_charge += min(0.0, float(_st.get('ac', 0) or 0))  # ac < 0 = Laden
+            # FIX 45: echter PV-Ueberschuss = -Netzfluss + alles, was gerade in Batterien geht
+            _ctrl_charge = 0.0
+            for _n, _st in states.items():
+                if _n in bms_active or _n in soc_safety_active or _st.get('disabled') or _st.get('err'):
+                    continue
+                _ctrl_charge += min(0.0, float(_st.get('ac', 0) or 0))
+            self._surplus_w = -float(actual_flow) - _ctrl_charge - _care_charge
             if _care_charge < 0:
-                grid_flow += _care_charge
+                grid_flow += _care_charge  # FIX 45: nur noch fuer die PV-Erkennung
 
             ac_ctrl_now = 0.0
             for n, st in states.items():
@@ -2671,7 +2695,10 @@ class PVControlApp(Hass):
                     continue
                 ac_ctrl_now += float(st.get("ac", 0) or 0)
 
-            A_set = ac_ctrl_now + grid_flow
+            A_set = ac_ctrl_now + actual_flow
+            # FIX 45: andere Batterien entladen nicht fuer BMS-/Notladung - nehmen ihr aber auch den Ueberschuss nicht weg
+            if _care_charge < 0 and A_set > 0:
+                A_set = max(A_set + _care_charge, 0.0)
 
             if LOG_DIAG_GRID:
                 self.log(f"DIAG GRID: grid_flow={grid_flow:.1f}W ac_ctrl_now={ac_ctrl_now:.1f}W "
@@ -2801,6 +2828,12 @@ class PVControlApp(Hass):
                             "last_full":      self._fmt_ts(bms.get("last_full_ts")),
                             "hold_until":     self._fmt_ts(bms.get("holding_until")),
                             "cooldown_until": self._fmt_ts(bms.get("cooldown_until")),
+                            # FIX 45: fuer das Dashboard - wann zuletzt, wann wieder faellig
+                            'next_due': (self._fmt_ts(float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400)
+                                         if float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400 > time.time()
+                                         else 'faellig - wartet auf PV-Ueberschuss'),
+                            'status': ({'idle': 'Bereitschaft', 'charging': 'Vollladung laeuft (nur mit PV-Ueberschuss)', 'hold': 'Haltephase (voll)'}
+                                       .get(bms.get('phase', 'idle'), bms.get('phase', 'idle'))),
                         })
                     except Exception as e:
                         self.error(f"BMS-HA-SENSOR {n}: set_state fehlgeschlagen: {e}")

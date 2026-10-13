@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.11 (2026-10-13)
+
+### Behoben
+- BMS-Pflege: Die Vollladung laeuft jetzt nur noch mit dem PV-Ueberschuss, der gerade da ist. Bei Wolken oder nachts pausiert sie (vorher lief sie stur mit voller Leistung weiter - aus dem Netz oder aus einem zweiten Speicher, z. B. einem SMA-Hybridspeicher). Erst wenn sie BMS_CARE_PV_WAIT_H Stunden nicht fertig wurde, laedt sie mit voller Leistung.
+- Die geregelten Batterien nehmen der BMS-Batterie den PV-Ueberschuss nicht mehr weg (vorher lud die geregelte Batterie den ganzen Ueberschuss und die BMS-Batterie zog aus dem Netz).
+
+### Neu
+- Batterien-Tab: Je Batterie steht jetzt, wann die BMS-Pflege zuletzt lief und wann sie wieder faellig ist (Dashboard einmal mit `--dashboard` neu erzeugen lassen).
+
 ## 2.0.10 (2026-10-12)
 
 ### Behoben

@@ -471,6 +471,20 @@
          "name": "BMS-Phase"
         },
         {
+         "type": "attribute",
+         "entity": "sensor.bms_battery1_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery1_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
+        },
+        {
          "entity": "sensor.pv_battery1_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -749,6 +763,20 @@
         {
          "entity": "sensor.bms_battery2_phase",
          "name": "BMS-Phase"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery2_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery2_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
         },
         {
          "entity": "sensor.pv_battery2_comm_mode",
@@ -1031,6 +1059,20 @@
          "name": "BMS-Phase"
         },
         {
+         "type": "attribute",
+         "entity": "sensor.bms_battery3_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery3_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
+        },
+        {
          "entity": "sensor.pv_battery3_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -1311,6 +1353,20 @@
          "name": "BMS-Phase"
         },
         {
+         "type": "attribute",
+         "entity": "sensor.bms_battery4_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery4_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
+        },
+        {
          "entity": "sensor.pv_battery4_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -1589,6 +1645,20 @@
         {
          "entity": "sensor.bms_battery5_phase",
          "name": "BMS-Phase"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery5_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery5_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
         },
         {
          "entity": "sensor.pv_battery5_comm_mode",
@@ -1876,6 +1946,20 @@
         {
          "entity": "sensor.bms_battery6_phase",
          "name": "BMS-Phase"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery6_phase",
+         "attribute": "last_full",
+         "name": "BMS-Pflege zuletzt",
+         "icon": "mdi:calendar-check"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.bms_battery6_phase",
+         "attribute": "next_due",
+         "name": "BMS-Pflege wieder faellig",
+         "icon": "mdi:calendar-clock"
         },
         {
          "entity": "sensor.pv_battery6_comm_mode",
