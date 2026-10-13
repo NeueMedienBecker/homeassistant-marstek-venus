@@ -2556,6 +2556,55 @@
          "type": "custom:fold-entity-row",
          "head": {
           "type": "text",
+          "name": "Zähler & zweiter Speicher",
+          "text": " "
+         },
+         "padding": 12,
+         "entities": [
+          {
+           "entity": "text.marstek_grid_sensor",
+           "name": "Netz-Zähler (Sensor)"
+          },
+          {
+           "entity": "switch.marstek_grid_sensor_invert",
+           "name": "Vorzeichen drehen"
+          },
+          {
+           "type": "section",
+           "label": "Zweiter Speicher (z. B. Hybrid-Wechselrichter) – leer lassen, wenn keiner da ist"
+          },
+          {
+           "entity": "text.marstek_ext_storage_discharge_sensor",
+           "name": "Entladeleistung (Sensor)"
+          },
+          {
+           "entity": "text.marstek_ext_storage_charge_sensor",
+           "name": "Ladeleistung (Sensor)"
+          },
+          {
+           "entity": "text.marstek_ext_pv_sensor",
+           "name": "PV-Leistung (Sensor)"
+          }
+         ]
+        }
+       ]
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ <b>Zähler &amp; zweiter Speicher: Was bedeutet das?</b></summary>\n\n**Netz-Zähler (Sensor):** Der Home-Assistant-Sensor, der die Leistung am Hausanschluss misst (in W oder kW). Die Regelung versucht, diesen Wert auf 0 zu halten. **Positiv muss Bezug aus dem Netz sein, negativ Einspeisung.** Zeigt dein Zähler es andersherum, schalte **Vorzeichen drehen** ein.\n\nAktuell: `{{ states('text.marstek_grid_sensor') }}` → **{{ states(states('text.marstek_grid_sensor')) }} {{ state_attr(states('text.marstek_grid_sensor'),'unit_of_measurement') }}**\n\n**Zweiter Speicher:** Hast du noch einen anderen Speicher, der selbst auf 0 am Hausanschluss regelt (z. B. ein Hybrid-Wechselrichter wie SMA, Fronius, Huawei), dann sieht die Venus am Zähler nur noch 0 W und weiß nicht, dass der andere Speicher gerade aushilft. Trage hier dessen **Entladeleistung**, **Ladeleistung** und die **PV-Leistung** ein (alles Sensoren in W oder kW). Die Regelung rechnet dann so:\n\n- **Abends:** Entlädt der andere Speicher, zählt das wie Netzbezug → die Venus übernimmt den Hausverbrauch **zuerst**, der andere Speicher bleibt Reserve.\n- **Tagsüber:** Lädt der andere Speicher aus der PV, bleibt das unsichtbar → **erst er wird voll**, die Venus lädt nur mit dem, was dann noch übrig ist. Ist die Sonne weg, hört die Venus auf.\n- Lädt der andere Speicher mehr, als die PV liefert, kommt der Strom aus der Venus → das zählt wie Einspeisung und die Venus regelt zurück.\n\nGibt es nur **einen** Sensor für den anderen Speicher (+ = Entladen, − = Laden), trage ihn bei **Entladeleistung** ein und lass **Ladeleistung** leer. Ohne zweiten Speicher: alle drei Felder leer lassen.\n\nÄnderungen wirken sofort. **Einstellungen fest übernehmen** (unten) schreibt sie dauerhaft in `pv_config.py`.\n\n</details>"
+      },
+      {
+       "type": "entities",
+       "show_header_toggle": false,
+       "state_color": true,
+       "grid_options": {
+        "columns": "full"
+       },
+       "entities": [
+        {
+         "type": "custom:fold-entity-row",
+         "head": {
+          "type": "text",
           "name": "SoC-Schutz / Notladung",
           "text": " "
          },

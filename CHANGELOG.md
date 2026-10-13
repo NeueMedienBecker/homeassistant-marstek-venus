@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.12 (2026-10-13)
+
+### Neu
+- Dashboard, Tab Konfiguration, neue Gruppe **Zaehler & zweiter Speicher**: Der Netz-Zaehler (Sensor, Vorzeichen) ist jetzt im Dashboard sichtbar und aenderbar. Zusaetzlich kann ein zweiter Speicher (z. B. Hybrid-Wechselrichter wie SMA) mit Entlade-, Lade- und PV-Leistung eingetragen werden - die Regelung rechnet ihn dann heraus: abends uebernimmt die Venus den Hausverbrauch zuerst, tagsueber laedt erst der andere Speicher voll, die Venus nur mit dem Rest.
+
+### Behoben
+- BMS-Pflege: "Max. Warten auf Sonne" zaehlt ab dem Faelligkeitstag. Ist die Vollladung bis dahin nicht fertig (zu wenig Sonne), laedt sie danach mit voller Leistung ohne PV durch.
+- Installer: --meter / --reconfigure halten den neuen Dashboard-Wert "Netz-Zaehler" synchron.
+
 ## 2.0.11 (2026-10-13)
 
 ### Behoben

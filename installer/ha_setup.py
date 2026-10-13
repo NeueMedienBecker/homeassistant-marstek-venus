@@ -72,6 +72,7 @@ DASH_KEYS = (
     "BMS_CARE_PV_WAIT_H", "PV_CHARGE_ALLOW_W", "PV_SURPLUS_MIN_TIME", "STABLE_TIMER_S",
     "GRID_STOP_AFTER_S", "PV_BUCKET_ENABLE", "PV_BUCKET_1_TOTAL_W", "PV_BUCKET_2_TOTAL_W",
     "PV_MIN_PER_BAT_W", "PV_ROTATE_ENABLE", "READ_ONLY",
+    "GRID_SENSOR", "GRID_SENSOR_INVERT", "EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR",
 )
 USER_KEYS = (
     "BATTERY_CONFIG", "POWER_SENSOR", "HA_ENTITY_ID_MAP", "_BATTERY_META_OVERRIDE", "AC_SIGN_INVERT",
@@ -557,6 +558,28 @@ def config_set(text, values, note=None):
     out = "\n".join(lines)
     compile(out, "pv_config.py", "exec")
     return out
+
+
+def sync_grid_sensor(cfg_text, app_dir, ps):
+    """FIX 46: Zaehler per Installer gewechselt -> Dashboard-Werte GRID_SENSOR/-_INVERT nachziehen
+    (in pv_config.py nur, wenn schon vorhanden; aus pv_mqtt_overrides.json immer entfernen)."""
+    vals = config_values(cfg_text)
+    if "GRID_SENSOR" in vals or "GRID_SENSOR_INVERT" in vals:
+        cfg_text = config_set(cfg_text, dict(GRID_SENSOR=str(ps.get("entity") or ""),
+                                             GRID_SENSOR_INVERT=bool(ps.get("invert"))))
+    op = os.path.join(app_dir or "", "pv_mqtt_overrides.json")
+    try:
+        with open(op, encoding="utf-8") as f:
+            ov = json.load(f) or {}
+        if any(k in ov for k in ("GRID_SENSOR", "GRID_SENSOR_INVERT")):
+            ov.pop("GRID_SENSOR", None)
+            ov.pop("GRID_SENSOR_INVERT", None)
+            if not DRY:
+                with open(op, "w", encoding="utf-8") as f:
+                    json.dump(ov, f, indent=2)
+    except (OSError, ValueError):
+        pass
+    return cfg_text
 
 
 def is_user_key(k):
@@ -1970,12 +1993,14 @@ def main():
             ps = ask_grid_sensor((vals.get("POWER_SENSOR") or {}).get("entity"))
             read_only = decide_read_only(cfg_text, app_dir, ps)
             cfg_text = config_set(cfg_text, dict(POWER_SENSOR=ps, READ_ONLY=read_only))
+            cfg_text = sync_grid_sensor(cfg_text, app_dir, ps)
         elif a.meter:
             vals = config_values(cfg_text)
             cur = (vals.get("POWER_SENSOR") or {}).get("entity")
             ps = pick_grid_sensor(cur)
             read_only = decide_read_only(cfg_text, app_dir, ps)
             cfg_text = config_set(cfg_text, dict(POWER_SENSOR=ps, READ_ONLY=read_only))
+            cfg_text = sync_grid_sensor(cfg_text, app_dir, ps)
             if ps.get("entity") != cur:
                 added = 1  # Zaehler gewechselt: Dashboard ohne Rueckfrage neu erzeugen
     else:

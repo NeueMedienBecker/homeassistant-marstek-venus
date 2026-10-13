@@ -137,7 +137,7 @@ Einfach den Installer ausführen. Die alte Datei bleibt liegen, bitte den alten 
 
 - **Übersicht** – Ampel je Batterie (Kontakt, Ladestand, Temperatur, Vollladung, Ausweichweg), Leistung und Ladestand, Verläufe
 - **Batterien** – je Batterie Zustand, Leistung, Temperaturen und **Energie geladen/entladen heute, gestern, diese Woche**
-- **Konfiguration** – aufklappbar: Hauptschalter, je Batterie Anbindung und IP-Adressen, SoC-Schutz, Regelung, BMS-Pflege, Erweitert; dazu Verwaltung (Einstellungen fest übernehmen / verwerfen / Werksreset, Batterie anlegen / löschen). Jede Gruppe hat eine einfache Erklärung.
+- **Konfiguration** – aufklappbar: Hauptschalter, je Batterie Anbindung und IP-Adressen, Zähler & zweiter Speicher (z. B. Hybrid-Wechselrichter), SoC-Schutz, Regelung, BMS-Pflege, Erweitert; dazu Verwaltung (Einstellungen fest übernehmen / verwerfen / Werksreset, Batterie anlegen / löschen). Jede Gruppe hat eine einfache Erklärung.
 
 Änderungen im Dashboard wirken nach ca. 15 Sekunden, ohne Neustart.
 

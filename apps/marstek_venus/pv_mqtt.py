@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.11",
+    "sw_version": "2.0.12",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -83,6 +83,12 @@ BASE_PARAMS = [
     # ---- Schalter --------------------------------------------------------
     ("CONTROL_ENABLE",            "switch", "Regelung aktiv (Hauptschalter)", None, None, None, None, "mdi:power",          None),
     ("READ_ONLY",                 "switch", "Nur beobachten (keine Befehle an Batterien)", None, None, None, None, "mdi:eye-outline", None),  # FIX 40
+    # FIX 46: Zaehler & zweiter Speicher
+    ("GRID_SENSOR",                "text",   "Netz-Zaehler (Sensor)",                       None, None, None, None, "mdi:transmission-tower", "config"),
+    ("GRID_SENSOR_INVERT",         "switch", "Netz-Zaehler: Vorzeichen drehen",             None, None, None, None, "mdi:swap-vertical",      "config"),
+    ("EXT_STORAGE_DISCHARGE_SENSOR", "text", "Zweiter Speicher: Entladeleistung (Sensor)",  None, None, None, None, "mdi:battery-arrow-down-outline", "config"),
+    ("EXT_STORAGE_CHARGE_SENSOR",  "text",   "Zweiter Speicher: Ladeleistung (Sensor)",     None, None, None, None, "mdi:battery-arrow-up-outline",   "config"),
+    ("EXT_PV_SENSOR",              "text",   "Zweiter Speicher: PV-Leistung (Sensor)",      None, None, None, None, "mdi:solar-power",        "config"),
     # (BATTERYn_ACTIVE werden dynamisch je Batterie erzeugt)
     # ---- PV-Vorrang Notladung / BMS-Pflege -------------------------------
     ("SOC_SAFETY_REQUIRE_PV",     "switch", "Notladung: Sonne bevorzugen", None, None, None, None,    "mdi:solar-power",    None),
@@ -290,7 +296,9 @@ class ParamBridge:
         if typ == "switch":
             return _to_bool(raw)
         if typ == "text":  # FIX 36
-            v = str(raw).strip()[:64]
+            v = str(raw).strip()[:128 if key.endswith('_SENSOR') else 64]
+            if key.endswith('_SENSOR'):  # FIX 46: Entity-ID oder leer
+                return v if (v == '' or re.match(r'^[a-z_]+\.[a-z0-9_]+$', v)) else str(self.g.get(key) or '')
             if key.endswith("_HOST"):
                 return v if _valid_ip(v) else str(self.g.get(key) or "")
             return v
@@ -549,7 +557,7 @@ class ParamBridge:
                 cfg.update({"payload_on": "ON", "payload_off": "OFF",
                             "state_on": "ON", "state_off": "OFF"})
             elif typ == "text":  # FIX 36
-                cfg.update({"min": 0, "max": 64, "mode": "text"})
+                cfg.update({"min": 0, "max": 128 if key.endswith("_SENSOR") else 64, "mode": "text"})
             elif typ == "select":  # FIX 31
                 cfg["options"] = list(lo)
             else:

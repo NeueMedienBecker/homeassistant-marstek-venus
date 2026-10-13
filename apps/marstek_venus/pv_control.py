@@ -61,6 +61,7 @@ Aenderungen:
 - FIX 43: Ladeleistung von BMS-Pflege/Notladung wird aus dem Netzfluss herausgerechnet (andere Batterien entladen nicht, um die ladende Batterie zu fuettern).
 - FIX 44: Nach einer Neuinstallation wartet die BMS-Pflege erst auf PV-Ueberschuss (BMS_CARE_PV_WAIT_H), statt sofort aus dem Netz voll zu laden.
 - FIX 45: BMS-Pflege laedt nur mit dem PV-Ueberschuss, der gerade da ist (pausiert bei Wolken/nachts, nach BMS_CARE_PV_WAIT_H ohne Abschluss mit voller Leistung); geregelte Batterien nehmen der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie.
+- FIX 46: Netz-Zaehler (Sensor, Vorzeichen) und ein zweiter Speicher (Entlade-/Ladeleistung, PV) sind im Dashboard einstellbar (GRID_SENSOR, GRID_SENSOR_INVERT, EXT_STORAGE_*_SENSOR, EXT_PV_SENSOR); BMS-Pflege: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach wird ohne PV durchgeladen.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -81,7 +82,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.11"  # FIX 39
+PV_CONTROL_VERSION = "2.0.12"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -97,6 +98,15 @@ from pv_config import *             # noqa: F403,F401  <- ALLE Einstellungen kom
 # FIX 40: Beobachtungsmodus (Standard aus, falls eine alte pv_config.py ihn nicht kennt)
 if "READ_ONLY" not in globals():
     READ_ONLY = False
+
+# FIX 46: Zaehler und zweiter Speicher - Standard aus POWER_SENSOR, im Dashboard aenderbar
+if "GRID_SENSOR" not in globals():
+    GRID_SENSOR = str((POWER_SENSOR or {}).get("entity") or "")
+if "GRID_SENSOR_INVERT" not in globals():
+    GRID_SENSOR_INVERT = bool((POWER_SENSOR or {}).get("invert"))
+for _k46 in ("EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR"):
+    if _k46 not in globals():
+        globals()[_k46] = ""
 
 # Rueckwaertskompatibilitaet: neue Spalten auch bei alter config sicherstellen.
 # Dieser Block ist idempotent – bei aktueller Config passiert nichts.
@@ -1846,6 +1856,19 @@ class PVControlApp(Hass):
     # Logging Helpers
     # -------------------------------------------------------------------------
 
+    def _ext_power(self, eid):
+        """FIX 46: Leistung eines optionalen Sensors in W (kW wird umgerechnet), 0.0 wenn leer/unlesbar."""
+        eid = str(eid or '').strip()
+        if not eid:
+            return 0.0
+        try:
+            full = self.get_state(eid, attribute='all') or {}
+            v = float(full.get('state'))
+            unit = str((full.get('attributes') or {}).get('unit_of_measurement') or 'W').strip().lower()
+            return v * 1000.0 if unit == 'kw' else v
+        except Exception:
+            return 0.0
+
     def _fmt_ts(self, ts):
         try:
             ts = float(ts or 0)
@@ -2255,11 +2278,9 @@ class PVControlApp(Hass):
         _w = int(BMS_FORCE_CHARGE_W)
         _budget = None
         if globals().get('BMS_CARE_REQUIRE_PV', True):
-            if not bms.get('charging_since'):
-                bms['charging_since'] = now_ts
-                self._save_bms_state()
             _wait_s = float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600
-            if (now_ts - float(bms.get('charging_since') or now_ts)) < _wait_s:
+            _due_ts = float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400
+            if now_ts < _due_ts + _wait_s:  # FIX 46: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach ohne PV durchladen
                 _budget = float(getattr(self, '_surplus_w', 0.0) or 0.0)
                 _w = int(min(float(BMS_FORCE_CHARGE_W), max(0.0, _budget)) // 50 * 50)
         if driver:
@@ -2269,7 +2290,7 @@ class PVControlApp(Hass):
             else:
                 ok = self._bms_cmd(name, driver, 'charge%d' % _w, 1, _w, 0)
                 if ok:
-                    verify_logs.append(f"{name}: BMS CHARGE set={_w}W" + (' (PV-Ueberschuss)' if _budget is not None else '') + f" bis SoC>={FULL_CHARGE_SOC}%")
+                    verify_logs.append(f"{name}: BMS CHARGE set={_w}W" + (' (PV-Ueberschuss)' if _budget is not None else ' (Wartezeit auf Sonne abgelaufen - ohne PV)') + f" bis SoC>={FULL_CHARGE_SOC}%")
         return True
 
     # -------------------------------------------------------------------------
@@ -2521,13 +2542,21 @@ class PVControlApp(Hass):
             if POWER_SENSOR.get("enabled"):
                 try:
                     # FIX 19: unplausible Werte verwerfen, veralteten Zaehler erkennen
-                    _mfull = self.get_state(POWER_SENSOR["entity"], attribute="all") or {}
+                    _mfull = self.get_state((globals().get("GRID_SENSOR") or POWER_SENSOR.get("entity")), attribute="all") or {}  # FIX 46
                     _mval = float(_mfull.get("state"))
                     _munit = str((_mfull.get("attributes") or {}).get("unit_of_measurement") or "W").strip().lower()  # FIX 39
                     if _munit == "kw":
                         _mval *= 1000.0
-                    if POWER_SENSOR.get("invert"):
+                    if globals().get("GRID_SENSOR_INVERT", POWER_SENSOR.get("invert")):  # FIX 46
                         _mval = -_mval
+                    # FIX 46: zweiter Speicher (z. B. Hybrid-Wechselrichter) herausrechnen
+                    _ext_dis = self._ext_power(globals().get('EXT_STORAGE_DISCHARGE_SENSOR'))
+                    _ext_chg = self._ext_power(globals().get('EXT_STORAGE_CHARGE_SENSOR'))
+                    if not str(globals().get('EXT_STORAGE_CHARGE_SENSOR') or '').strip() and _ext_dis < 0:
+                        _ext_chg, _ext_dis = -_ext_dis, 0.0  # ein gemeinsamer Sensor: + Entladen, - Laden
+                    if _ext_dis or _ext_chg:
+                        _ext_pv = self._ext_power(globals().get('EXT_PV_SENSOR'))
+                        _mval += max(0.0, _ext_dis) - max(0.0, _ext_chg - max(0.0, _ext_pv))
                     _mts = 0.0
                     for _mk in ("last_reported", "last_updated", "last_changed"):
                         try:

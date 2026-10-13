@@ -252,6 +252,161 @@ def fix45_dashboard(cfg):
     return cfg
 
 
+EXT_HELP_MD = """<details><summary>ℹ️ <b>Zähler &amp; zweiter Speicher: Was bedeutet das?</b></summary>
+
+**Netz-Zähler (Sensor):** Der Home-Assistant-Sensor, der die Leistung am Hausanschluss misst (in W oder kW). Die Regelung versucht, diesen Wert auf 0 zu halten. **Positiv muss Bezug aus dem Netz sein, negativ Einspeisung.** Zeigt dein Zähler es andersherum, schalte **Vorzeichen drehen** ein.
+
+Aktuell: `{{ states('text.marstek_grid_sensor') }}` → **{{ states(states('text.marstek_grid_sensor')) }} {{ state_attr(states('text.marstek_grid_sensor'),'unit_of_measurement') }}**
+
+**Zweiter Speicher:** Hast du noch einen anderen Speicher, der selbst auf 0 am Hausanschluss regelt (z. B. ein Hybrid-Wechselrichter wie SMA, Fronius, Huawei), dann sieht die Venus am Zähler nur noch 0 W und weiß nicht, dass der andere Speicher gerade aushilft. Trage hier dessen **Entladeleistung**, **Ladeleistung** und die **PV-Leistung** ein (alles Sensoren in W oder kW). Die Regelung rechnet dann so:
+
+- **Abends:** Entlädt der andere Speicher, zählt das wie Netzbezug → die Venus übernimmt den Hausverbrauch **zuerst**, der andere Speicher bleibt Reserve.
+- **Tagsüber:** Lädt der andere Speicher aus der PV, bleibt das unsichtbar → **erst er wird voll**, die Venus lädt nur mit dem, was dann noch übrig ist. Ist die Sonne weg, hört die Venus auf.
+- Lädt der andere Speicher mehr, als die PV liefert, kommt der Strom aus der Venus → das zählt wie Einspeisung und die Venus regelt zurück.
+
+Gibt es nur **einen** Sensor für den anderen Speicher (+ = Entladen, − = Laden), trage ihn bei **Entladeleistung** ein und lass **Ladeleistung** leer. Ohne zweiten Speicher: alle drei Felder leer lassen.
+
+Änderungen wirken sofort. **Einstellungen fest übernehmen** (unten) schreibt sie dauerhaft in `pv_config.py`.
+
+</details>"""
+
+
+def fix46_control(src):
+    """FIX 46: Netz-Zaehler und zweiter Speicher (Hybrid-Wechselrichter) im Dashboard einstellbar;
+    BMS-Pflege: Wartezeit auf Sonne zaehlt ab Faelligkeit, danach volle Leistung ohne PV."""
+    if "FIX 46" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 45:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 46: Netz-Zaehler (Sensor, Vorzeichen) und ein zweiter Speicher (Entlade-/Ladeleistung, PV) sind im "
+                                "Dashboard einstellbar (GRID_SENSOR, GRID_SENSOR_INVERT, EXT_STORAGE_*_SENSOR, EXT_PV_SENSOR); "
+                                "BMS-Pflege: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach wird ohne PV durchgeladen.")
+    # 1) Defaults nach dem READ_ONLY-Block
+    i = find(L, "READ_ONLY = False")
+    assert L[i - 1].strip() == 'if "READ_ONLY" not in globals():'
+    L[i + 1:i + 1] = [
+        "",
+        "# FIX 46: Zaehler und zweiter Speicher - Standard aus POWER_SENSOR, im Dashboard aenderbar",
+        'if "GRID_SENSOR" not in globals():',
+        '    GRID_SENSOR = str((POWER_SENSOR or {}).get("entity") or "")',
+        'if "GRID_SENSOR_INVERT" not in globals():',
+        '    GRID_SENSOR_INVERT = bool((POWER_SENSOR or {}).get("invert"))',
+        'for _k46 in ("EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR"):',
+        "    if _k46 not in globals():",
+        '        globals()[_k46] = ""',
+    ]
+    # 2) Zaehler lesen
+    i = find(L, '_mfull = self.get_state(POWER_SENSOR["entity"], attribute="all") or {}')
+    L[i] = L[i].replace('POWER_SENSOR["entity"]', '(globals().get("GRID_SENSOR") or POWER_SENSOR.get("entity"))') + "  # FIX 46"
+    i = find(L, 'if POWER_SENSOR.get("invert"):')
+    L[i] = L[i].replace('POWER_SENSOR.get("invert")', 'globals().get("GRID_SENSOR_INVERT", POWER_SENSOR.get("invert"))') + "  # FIX 46"
+    assert L[i + 1].strip() == "_mval = -_mval"
+    b = ind(L[i])
+    L[i + 2:i + 2] = [
+        b + "# FIX 46: zweiter Speicher (z. B. Hybrid-Wechselrichter) herausrechnen",
+        b + "_ext_dis = self._ext_power(globals().get('EXT_STORAGE_DISCHARGE_SENSOR'))",
+        b + "_ext_chg = self._ext_power(globals().get('EXT_STORAGE_CHARGE_SENSOR'))",
+        b + "if not str(globals().get('EXT_STORAGE_CHARGE_SENSOR') or '').strip() and _ext_dis < 0:",
+        b + "    _ext_chg, _ext_dis = -_ext_dis, 0.0  # ein gemeinsamer Sensor: + Entladen, - Laden",
+        b + "if _ext_dis or _ext_chg:",
+        b + "    _ext_pv = self._ext_power(globals().get('EXT_PV_SENSOR'))",
+        b + "    _mval += max(0.0, _ext_dis) - max(0.0, _ext_chg - max(0.0, _ext_pv))",
+    ]
+    # 3) Hilfsmethode
+    i = find(L, "def _fmt_ts(self, ts):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _ext_power(self, eid):",
+        b + '    """FIX 46: Leistung eines optionalen Sensors in W (kW wird umgerechnet), 0.0 wenn leer/unlesbar."""',
+        b + "    eid = str(eid or '').strip()",
+        b + "    if not eid:",
+        b + "        return 0.0",
+        b + "    try:",
+        b + "        full = self.get_state(eid, attribute='all') or {}",
+        b + "        v = float(full.get('state'))",
+        b + "        unit = str((full.get('attributes') or {}).get('unit_of_measurement') or 'W').strip().lower()",
+        b + "        return v * 1000.0 if unit == 'kw' else v",
+        b + "    except Exception:",
+        b + "        return 0.0",
+        "",
+    ]
+    # 4) BMS: Wartezeit ab Faelligkeit
+    i = find(L, "if not bms.get('charging_since'):")
+    assert "_wait_s = float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600" in L[i + 3]
+    assert "if (now_ts - float(bms.get('charging_since') or now_ts)) < _wait_s:" in L[i + 4]
+    b = ind(L[i])
+    L[i:i + 5] = [
+        b + "_wait_s = float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600",
+        b + "_due_ts = float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400",
+        b + "if now_ts < _due_ts + _wait_s:  # FIX 46: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach ohne PV durchladen",
+    ]
+    i = find(L, "verify_logs.append(f\"{name}: BMS CHARGE set={_w}W\" + (' (PV-Ueberschuss)' if _budget is not None else '') + f\" bis SoC>={FULL_CHARGE_SOC}%\")")
+    L[i] = L[i].replace("else ''", "else ' (Wartezeit auf Sonne abgelaufen - ohne PV)'")
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix46_mqtt(src):
+    if '"GRID_SENSOR"' in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '("READ_ONLY",', startswith=True)
+    L[i + 1:i + 1] = [
+        ind(L[i]) + "# FIX 46: Zaehler & zweiter Speicher",
+        ind(L[i]) + '("GRID_SENSOR",                "text",   "Netz-Zaehler (Sensor)",                       None, None, None, None, "mdi:transmission-tower", "config"),',
+        ind(L[i]) + '("GRID_SENSOR_INVERT",         "switch", "Netz-Zaehler: Vorzeichen drehen",             None, None, None, None, "mdi:swap-vertical",      "config"),',
+        ind(L[i]) + '("EXT_STORAGE_DISCHARGE_SENSOR", "text", "Zweiter Speicher: Entladeleistung (Sensor)",  None, None, None, None, "mdi:battery-arrow-down-outline", "config"),',
+        ind(L[i]) + '("EXT_STORAGE_CHARGE_SENSOR",  "text",   "Zweiter Speicher: Ladeleistung (Sensor)",     None, None, None, None, "mdi:battery-arrow-up-outline",   "config"),',
+        ind(L[i]) + '("EXT_PV_SENSOR",              "text",   "Zweiter Speicher: PV-Leistung (Sensor)",      None, None, None, None, "mdi:solar-power",        "config"),',
+    ]
+    i = find(L, "v = str(raw).strip()[:64]")
+    b = ind(L[i])
+    L[i:i + 1] = [
+        b + "v = str(raw).strip()[:128 if key.endswith('_SENSOR') else 64]",
+        b + "if key.endswith('_SENSOR'):  # FIX 46: Entity-ID oder leer",
+        b + "    return v if (v == '' or re.match(r'^[a-z_]+\\.[a-z0-9_]+$', v)) else str(self.g.get(key) or '')",
+    ]
+    i = find(L, 'cfg.update({"min": 0, "max": 64, "mode": "text"})')
+    L[i] = L[i].replace('"max": 64', '"max": 128 if key.endswith("_SENSOR") else 64')
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix46_dashboard(cfg):
+    """FIX 46: Konfiguration -> Karte 'Zaehler & zweiter Speicher' + Hilfetext."""
+    if "text.marstek_grid_sensor" in json.dumps(cfg):
+        return cfg
+    card = {"type": "entities", "show_header_toggle": False, "state_color": True,
+            "grid_options": {"columns": "full"},
+            "entities": [{"type": "custom:fold-entity-row",
+                          "head": {"type": "text", "name": "Zähler & zweiter Speicher", "text": " "},
+                          "padding": 12,
+                          "entities": [
+                              {"entity": "text.marstek_grid_sensor", "name": "Netz-Zähler (Sensor)"},
+                              {"entity": "switch.marstek_grid_sensor_invert", "name": "Vorzeichen drehen"},
+                              {"type": "section", "label": "Zweiter Speicher (z. B. Hybrid-Wechselrichter) – leer lassen, wenn keiner da ist"},
+                              {"entity": "text.marstek_ext_storage_discharge_sensor", "name": "Entladeleistung (Sensor)"},
+                              {"entity": "text.marstek_ext_storage_charge_sensor", "name": "Ladeleistung (Sensor)"},
+                              {"entity": "text.marstek_ext_pv_sensor", "name": "PV-Leistung (Sensor)"},
+                          ]}]}
+    helpc = {"type": "markdown", "content": EXT_HELP_MD}
+    for v in cfg.get("views", []):
+        if v.get("path") != "konfiguration":
+            continue
+        cards = (v.get("sections") or [{}])[0].get("cards", [])
+        pos = None
+        for i, c in enumerate(cards):
+            if c.get("type") == "markdown" and "Verbindung (IP-Adressen" in c.get("content", ""):
+                pos = i + 1
+        if pos is None:
+            pos = 3
+        cards[pos:pos] = [card, helpc]
+        break
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -514,12 +669,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))), ("pv_mqtt.py", fix40_mqtt),
+    for fn, f in (("pv_control.py", lambda t: fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))), ("pv_mqtt.py", lambda t: fix46_mqtt(fix40_mqtt(t))),
                   ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -533,12 +688,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))
+       fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))
+    cfg = fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")
