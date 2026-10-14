@@ -823,15 +823,124 @@ def start_or_restart(slug, name, restart=False):
 LOCAL_BROKERS = ("core-mosquitto", "localhost", "127.0.0.1")
 
 
+def _is_local_broker(host):
+    h = str(host or "core-mosquitto").strip().lower()
+    return h in LOCAL_BROKERS or h.endswith("-mosquitto") or h.endswith("_mosquitto")
+
+
+def ha_mqtt_entry():
+    """Daten der MQTT-Integration von Home Assistant (nur lesen) oder None."""
+    try:
+        with open(os.path.join(ha_config_dir(), ".storage", "core.config_entries"), encoding="utf-8") as f:
+            ce = json.load(f)
+    except (OSError, ValueError):
+        return None
+    mq = [e for e in ((ce.get("data") or {}).get("entries") or []) if e.get("domain") == "mqtt"]
+    mq.sort(key=lambda e: 1 if e.get("disabled_by") else 0)
+    if not mq:
+        return None
+    d = dict(mq[0].get("data") or {})
+    d["_options"] = dict(mq[0].get("options") or {})
+    return d
+
+
+def _ha_mqtt_tls(d):
+    return bool(d.get("certificate") or d.get("client_cert") or d.get("client_key")
+                or str(d.get("transport") or "tcp") != "tcp" or str(d.get("port") or "") == "8883")
+
+
+def mqtt_test(host, port, user, password, timeout=6):
+    """Einfacher MQTT-Verbindungstest (CONNECT/CONNACK, MQTT 3.1.1). Rueckgabe (ok, Text)."""
+    def s_(x):
+        b = str(x).encode("utf-8")
+        return struct.pack("!H", len(b)) + b
+    flags, payload = 0x02, s_("marstek_installer_test")
+    if user:
+        flags |= 0x80
+        payload += s_(user)
+        if password:
+            flags |= 0x40
+            payload += s_(password)
+    var = s_("MQTT") + bytes([4, flags]) + struct.pack("!H", 30)
+    body = var + payload
+    ln, enc = len(body), b""
+    while True:
+        b_ = ln % 128
+        ln //= 128
+        enc += bytes([b_ | (0x80 if ln else 0)])
+        if not ln:
+            break
+    try:
+        with socket.create_connection((str(host), int(port)), timeout=timeout) as c:
+            c.settimeout(timeout)
+            c.sendall(b"\x10" + enc + body)
+            r = c.recv(4)
+            try:
+                c.sendall(b"\xe0\x00")
+            except OSError:
+                pass
+    except OSError as e:
+        return False, L(f"nicht erreichbar ({e})", f"not reachable ({e})")
+    if len(r) < 4 or r[0] != 0x20:
+        return False, L("keine gueltige MQTT-Antwort", "no valid MQTT answer")
+    rc = r[3]
+    if rc == 0:
+        return True, "OK"
+    return False, {1: "Protokoll abgelehnt", 2: "Client-ID abgelehnt", 3: "Broker nicht bereit",
+                   4: "Benutzer/Passwort falsch", 5: "nicht berechtigt"}.get(rc, f"Fehler {rc}")
+
+
+def adopt_ha_broker(login, quiet=False):
+    """Zeigt die MQTT-Integration von Home Assistant auf einen ANDEREN Broker als die Steuerung, uebernimmt
+    die Steuerung diesen Broker mit den Zugangsdaten der Integration - nach erfolgreichem Verbindungstest.
+    Am Broker und an Benutzern/Passwoertern wird nichts geaendert. Rueckgabe: neues login-dict oder None."""
+    d = ha_mqtt_entry()
+    if not d or not d.get("broker"):
+        return None
+    ha_host, ha_port = str(d.get("broker")), int(d.get("port") or 1883)
+    ha_local = _is_local_broker(ha_host)
+    my_host = str((login or {}).get("host") or "core-mosquitto")
+    if (ha_local and _is_local_broker(my_host)) or (not ha_local and ha_host == my_host
+                                                     and ha_port == int((login or {}).get("port") or 1883)):
+        return None
+    if ha_local:
+        # HA nutzt Mosquitto, die Steuerung einen anderen Broker -> zurueck auf den eigenen Mosquitto-Zugang
+        return {"host": "core-mosquitto", "port": 1883, "user": MQTT_USER, "password": secrets.token_urlsafe(18)}
+    say(L(f"  Home Assistant benutzt den MQTT-Broker {ha_host}:{ha_port} (nicht Mosquitto) - "
+          f"die Steuerung muss denselben Broker benutzen.",
+          f"  Home Assistant uses the MQTT broker {ha_host}:{ha_port} (not Mosquitto) - "
+          f"the control must use the same broker."))
+    if _ha_mqtt_tls(d):
+        warn(L("Der Broker nutzt TLS/Zertifikate oder Websockets - das kann die Steuerung nicht automatisch "
+               "uebernehmen.", "The broker uses TLS/certificates or websockets - cannot be adopted automatically."))
+        hint(L("Bitte in pv_mqtt_login.json host, port, user, password von Hand eintragen.",
+               "Please enter host, port, user, password in pv_mqtt_login.json manually."))
+        return None
+    okk, why = mqtt_test(ha_host, ha_port, d.get("username") or "", d.get("password") or "")
+    if not okk:
+        warn(L(f"Verbindungstest mit den Zugangsdaten der MQTT-Integration fehlgeschlagen: {why} - "
+               f"die Steuerung bleibt wie sie ist.", f"Connection test with the MQTT integration's login failed: "
+               f"{why} - control left unchanged."))
+        hint(L(f"Bitte auf dem Broker {ha_host} einen Benutzer fuer die Steuerung anlegen und ihn in "
+               f"pv_mqtt_login.json eintragen (wird dann bei jedem Update beibehalten).",
+               f"Please create a user for the control on broker {ha_host} and enter it in pv_mqtt_login.json."))
+        return None
+    ok(L(f"Verbindungstest mit {ha_host}:{ha_port} erfolgreich - die Steuerung benutzt jetzt diesen Broker "
+         f"(am Broker und an Passwoertern wird nichts geaendert)",
+         f"Connection test with {ha_host}:{ha_port} OK - the control now uses this broker "
+         f"(nothing is changed on the broker or any password)"))
+    return {"host": ha_host, "port": ha_port, "user": d.get("username") or "", "password": d.get("password") or ""}
+
+
 def setup_mosquitto(login):
     """Legt den MQTT-Benutzer der Steuerung in Mosquitto an, falls er fehlt. Vorhandene Benutzer und
     Passwoerter werden NIE geaendert (andere Geraete koennten sie benutzen): weicht das Passwort ab, wird das
     Passwort aus Mosquitto fuer die Steuerung uebernommen. Rueckgabe: True, wenn sich 'login' geaendert hat."""
-    info = ensure_addon(ADDON_MOSQUITTO, "Mosquitto broker")
-    if str(login.get("host") or "core-mosquitto") not in LOCAL_BROKERS:
-        ok(L(f"Die Steuerung benutzt den MQTT-Broker {login.get('host')} - Mosquitto-Benutzer bleiben unveraendert",
-             f"The control uses the MQTT broker {login.get('host')} - Mosquitto users stay unchanged"))
+    if not _is_local_broker(login.get("host")):
+        ok(L(f"Die Steuerung benutzt den MQTT-Broker {login.get('host')} - Mosquitto wird nicht angefasst",
+             f"The control uses the MQTT broker {login.get('host')} - Mosquitto is left alone"))
         return False
+    info = ensure_addon(ADDON_MOSQUITTO, "Mosquitto broker")
     opts = dict((info or {}).get("options") or {})
     logins = list(opts.get("logins") or [])
     mine = [x for x in logins if x.get("username") == login["user"]]
@@ -1941,8 +2050,14 @@ def do_diag(version):
 
     sec("Add-ons (Apps)")
     login = None
+    _ha = ha_mqtt_entry()
+    _ha_foreign = bool(_ha and _ha.get("broker") and not _is_local_broker(_ha.get("broker")))
     for slug, name in ((ADDON_MOSQUITTO, "Mosquitto"), (ADDON_APPDAEMON, "AppDaemon")):
         info = addon_info(slug)
+        if slug == ADDON_MOSQUITTO and _ha_foreign and (not info or info.get("state") != "started"):
+            line(f"{name}: {(info or {}).get('state') or 'nicht installiert'} - nicht noetig, Home Assistant "
+                 f"benutzt den Broker {_ha.get('broker')}")
+            continue
         if not info:
             line(f"{name}: NICHT installiert")
             prob(f"{name} ist nicht installiert.", "addon_mosq" if slug == ADDON_MOSQUITTO else "addon_ad")
@@ -2063,10 +2178,28 @@ def do_diag(version):
                 prob("Die MQTT-Integration ist deaktiviert.", "mqtt_disabled")
             if disc is False:
                 prob("MQTT-Discovery ist ausgeschaltet.", "discovery")
-            if login and str(d.get("broker") or "") not in ("core-mosquitto", "localhost", "127.0.0.1",
-                                                              str(login.get("host"))):
-                prob(f"Die MQTT-Integration zeigt auf einen anderen Broker ({d.get('broker')}) als die Steuerung "
-                     f"({login.get('host')}).", "broker")
+            pref = o.get("discovery_prefix", d.get("discovery_prefix")) or "homeassistant"
+            if pref != "homeassistant":
+                line(f"Discovery-Praefix: {pref}")
+                prob(f"Das Discovery-Praefix der MQTT-Integration ist '{pref}', die Steuerung meldet sich unter "
+                     f"'homeassistant'. Bitte in der MQTT-Integration auf 'homeassistant' stellen.")
+            if login and e is mq[0]:
+                hb, mb = str(d.get("broker") or ""), str(login.get("host") or "core-mosquitto")
+                same = (_is_local_broker(hb) and _is_local_broker(mb)) or (
+                    hb == mb and int(d.get("port") or 1883) == int(login.get("port") or 1883))
+                if not same:
+                    ctx["broker_diff"] = True
+                    if not _is_local_broker(hb):
+                        okk, why = (False, "TLS/Zertifikat - nicht automatisch") if _ha_mqtt_tls(d) else \
+                            mqtt_test(hb, d.get("port") or 1883, d.get("username") or "", d.get("password") or "")
+                        line(f"Verbindungstest {hb}:{d.get('port') or 1883} mit dem Zugang der MQTT-Integration: {why}")
+                    else:
+                        okk = True
+                    prob(f"Die MQTT-Integration zeigt auf einen anderen Broker ({hb}) als die Steuerung ({mb}) - "
+                         f"die Steuerung muss den Broker von Home Assistant uebernehmen."
+                         + ("" if okk else " Automatisch nicht moeglich, weil der Verbindungstest fehlschlug: "
+                                           "bitte auf diesem Broker einen Benutzer anlegen und in "
+                                           "pv_mqtt_login.json eintragen."), "broker" if okk else None)
     if er is not None:
         ents = (er.get("data") or {}).get("entities") or []
         mine = [x for x in ents if str(x.get("unique_id") or "").startswith("marstek_ctrl_")]
@@ -2076,7 +2209,8 @@ def do_diag(version):
             line(f"  z.B. {x.get('entity_id')}")
         ctx["disabled_ents"] = [x.get("entity_id") for x in dis]
         if not mine:
-            prob("In Home Assistant gibt es keine Steuer-Entitaeten - MQTT-Discovery ist nie angekommen.", "republish")
+            prob("In Home Assistant gibt es keine Steuer-Entitaeten - MQTT-Discovery ist nie angekommen"
+                 + (" (Folge des anderen Brokers)." if ctx.get("broker_diff") else "."), "republish")
         if dis:
             prob(f"{len(dis)} Steuer-Entitaeten sind in Home Assistant deaktiviert.", "ent_disabled")
         sens = [x for x in ents if str(x.get("entity_id") or "").startswith(("sensor.marstekvenus_", "sensor.pv_battery"))]
@@ -2153,7 +2287,9 @@ DIAG_FIX_TEXT = {
     "login": "MQTT-Zugang fuer die Steuerung anlegen (eigener Benutzer 'marstek'; andere Benutzer und Passwoerter bleiben unveraendert)",
     "mosq_user": "MQTT-Zugang der Steuerung an Mosquitto anpassen (es wird kein vorhandenes Passwort geaendert)",
     "apps_yaml": "Steuerung in apps.yaml eintragen",
-    "broker": "Steuerung auf denselben MQTT-Broker wie Home Assistant umstellen (Zugangsdaten aus der MQTT-Integration)",
+    "broker": "Steuerung auf den MQTT-Broker von Home Assistant umstellen (Zugangsdaten aus der MQTT-Integration, "
+              "vorher Verbindungstest). Am Broker und an Passwoertern wird nichts geaendert - nur die Login-Datei "
+              "der Steuerung (mit Sicherung).",
     "mqtt_missing": "MQTT-Integration in Home Assistant einrichten",
     "mqtt_disabled": "MQTT-Integration in Home Assistant wieder aktivieren",
     "discovery": "MQTT-Discovery in Home Assistant einschalten",
@@ -2204,6 +2340,10 @@ def diag_repair(fixes, ctx):
             ensure_addon(ADDON_MOSQUITTO, "Mosquitto broker")
             start_or_restart(ADDON_MOSQUITTO, "Mosquitto")
             done.append("addon_mosq")
+        _hd = ha_mqtt_entry()
+        if ("login" in fixes or not login) and _hd and not _is_local_broker(_hd.get("broker")):
+            login = {"host": "core-mosquitto", "port": 1883, "user": MQTT_USER, "password": ""}
+            fixes = [f for f in fixes if f not in ("login", "mosq_user", "addon_mosq")]  # adopt_ha_broker folgt
         if "login" in fixes or not login or "mosq_user" in fixes:
             mosq = [x.get("username") for x in (((addon_info(ADDON_MOSQUITTO) or {}).get("options") or {}).get("logins") or [])]
             if not login or (login.get("user") != MQTT_USER and login.get("user") not in mosq):
@@ -2221,16 +2361,18 @@ def diag_repair(fixes, ctx):
         if "apps_yaml" in fixes:
             ensure_apps_yaml(apps)
             done.append("apps_yaml")
-        if "broker" in fixes and ctx["mqtt_entries"]:
-            d = dict(ctx["mqtt_entries"][0].get("data") or {})
-            new = {"host": d.get("broker"), "port": int(d.get("port") or 1883),
-                   "user": d.get("username") or "", "password": d.get("password") or ""}
-            backup_file(login_path, "vor_diag_fix")
-            write_file(login_path, json.dumps(new, indent=2))
-            ok(L(f"Steuerung benutzt jetzt den MQTT-Broker von Home Assistant ({new['host']})",
-                 f"Control now uses Home Assistant's MQTT broker ({new['host']})"))
-            login = new
-            done.append("broker")
+        if ctx["mqtt_entries"]:
+            new = adopt_ha_broker(login or {})
+            if new:
+                if _is_local_broker(new["host"]):
+                    setup_mosquitto(new)
+                if os.path.exists(login_path):
+                    backup_file(login_path, "vor_diag_fix")
+                write_file(login_path, json.dumps(new, indent=2))
+                login = new
+                done.append("broker")
+            elif "broker" in fixes:
+                warn(L("Broker nicht umgestellt - siehe Hinweis oben.", "Broker not changed - see hint above."))
         need_core = [f for f in fixes if f in ("mqtt_missing", "mqtt_disabled", "discovery", "ent_disabled")]
         if need_core:
             start_or_restart(ADDON_APPDAEMON, "AppDaemon")
@@ -2399,9 +2541,15 @@ def main():
             login = json.loads(read(login_path))
         except ValueError:
             login = None
-    if not login or not login.get("user"):
+    if not login or (not login.get("user") and _is_local_broker(login.get("host"))):
         login = {"host": "core-mosquitto", "port": 1883, "user": MQTT_USER,
                  "password": secrets.token_urlsafe(18)}
+    new_login = adopt_ha_broker(login)
+    if new_login:
+        login = new_login
+        if os.path.exists(login_path) and not DRY:
+            backup_file(login_path, "vor_brokerwechsel")
+            write_file(login_path, json.dumps(login, indent=2))
     if setup_mosquitto(login) and os.path.exists(login_path) and not DRY:
         write_file(login_path, json.dumps(login, indent=2))
     setup_appdaemon()

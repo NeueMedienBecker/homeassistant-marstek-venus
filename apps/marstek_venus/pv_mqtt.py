@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.14",
+    "sw_version": "2.0.15",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen

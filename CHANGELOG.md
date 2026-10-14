@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.15 (2026-10-14)
+
+### Behoben
+- **Anderer MQTT-Broker**: Zeigt die MQTT-Integration von Home Assistant auf einen anderen Broker als Mosquitto, uebernimmt die Steuerung diesen Broker jetzt schon bei Installation und Update (vorher nur per --fix) - mit den Zugangsdaten der Integration und nur nach erfolgreichem Verbindungstest. Am Broker und an Passwoertern wird nichts geaendert; Mosquitto wird in diesem Fall weder installiert noch angefasst. Vorher landeten die Schalter auf Mosquitto und Home Assistant sah sie nie ("Entitaet nicht gefunden").
+- --diag: zeigt das Ergebnis des Verbindungstests, prueft das Discovery-Praefix und meldet fehlendes Mosquitto nicht mehr als Fehler, wenn es gar nicht gebraucht wird.
+
 ## 2.0.14 (2026-10-14)
 
 ### Neu
