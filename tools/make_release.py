@@ -407,6 +407,127 @@ def fix46_dashboard(cfg):
     return cfg
 
 
+METER_HELP_MD = """**Zähler-Überwachung:** Kommt vom Netz-Zähler länger kein neuer Wert, weiß die Steuerung nicht mehr, was am Hausanschluss passiert – dann gehen die Batterien zur Sicherheit auf **STOP**. **STOP wenn Zählerwert älter als** legt fest, nach wie vielen Sekunden das passiert (Standard 60 s, 0 = Prüfung aus).
+
+Manche Zähler (z. B. EcoTracker, Shelly, Tibber Pulse) schicken nur alle paar Sekunden oder nur bei einer Änderung einen neuen Wert. Unter **Zähler-Info** siehst du, wie oft wirklich neue Werte kommen, die längste Pause und wie oft heute schon wegen eines alten Werts gestoppt wurde. Steht dort ein **Vorschlag**, stelle die Wartezeit auf diesen Wert. Bitte nicht viel höher als nötig: Fällt der Zähler wirklich aus, regelt die Steuerung so lange mit dem letzten Wert weiter.
+
+"""
+
+
+def fix47_control(src):
+    """FIX 47: Zaehler-Info-Sensor (Alter, Abstand neuer Werte, STOPs, Vorschlag fuer METER_MAX_AGE_S)."""
+    if "FIX 47" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 46:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 47: 'STOP wenn Zaehlerwert aelter als' (METER_MAX_AGE_S) ist im Dashboard einstellbar; "
+                                "sensor.marstek_meter_info zeigt Alter des Zaehlerwerts, typischen Abstand neuer Werte, "
+                                "STOPs der letzten 24 h und einen Vorschlag fuer die Wartezeit.")
+    i = find(L, '_mage = (time.time() - _mts) if _mts > 0 else 0.0')
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "# FIX 47: Abstand neuer Zaehlerwerte merken (fuer die Zaehler-Info im Dashboard)",
+        b + "if _mts > 0 and _mts != getattr(self, '_meter_prev_ts', 0.0):",
+        b + "    if getattr(self, '_meter_prev_ts', 0.0) > 0 and 0 < _mts - self._meter_prev_ts < 3600:",
+        b + "        self._meter_intervals = (getattr(self, '_meter_intervals', []) + [_mts - self._meter_prev_ts])[-40:]",
+        b + "    self._meter_prev_ts = _mts",
+    ]
+    i = find(L, "self._meter_last_good = (_mval, time.time())")
+    L.insert(i + 1, ind(L[i])[:-4] + "self._meter_info(_mage, _mmax_age)  # FIX 47")
+    i = find(L, 'self.log(f"Zaehler nicht lesbar ({e}){\' -> Batterien auf STOP\' if self._meter_stale else \'\'}", level="WARNING")')
+    L.insert(i + 1, ind(L[i]) + "self._meter_info(None, _mmax_age)  # FIX 47")
+    i = find(L, "def _ext_power(self, eid):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _meter_info(self, age, max_age):",
+        b + "    \"\"\"FIX 47: sensor.marstek_meter_info fuers Dashboard - nur Anzeige, aendert nichts an der Regelung.\"\"\"",
+        b + "    try:",
+        b + "        now = time.time()",
+        b + "        stale = bool(getattr(self, '_meter_stale', False))",
+        b + "        st = [g for g in getattr(self, '_meter_stops', []) if now - g[0] < 86400]  # [Beginn, laengstes Alter]",
+        b + "        if stale and not getattr(self, '_meter_stale_prev', False):",
+        b + "            st.append([now, 0.0])",
+        b + "        if stale and st and age is not None:",
+        b + "            st[-1][1] = max(st[-1][1], float(age))",
+        b + "        self._meter_stops, self._meter_stale_prev = st, stale",
+        b + "        iv = sorted(x for x in getattr(self, '_meter_intervals', []) if x <= 900)",
+        b + "        avg = int(round(sum(iv) / len(iv))) if iv else None",
+        b + "        mx = int(round(max([iv[-1] if iv else 0.0] + [g[1] for g in st]))) or None",
+        b + "        sug = None",
+        b + "        if mx and mx <= 300 and (len(iv) >= 5 or st):",
+        b + "            sug = int(max(60, -(-int(mx * 1.3) // 30) * 30))",
+        b + "        ma = int(round(float(max_age or 0)))",
+        b + "        if ma <= 0:",
+        b + "            status = 'Pruefung aus'",
+        b + "        elif stale:",
+        b + "            status = 'STOP - Zaehlerwert zu alt'",
+        b + "        elif mx and mx > 300:",
+        b + "            status = f'Zaehler faellt zeitweise aus (bis {mx} s) - Zaehler bzw. WLAN pruefen'",
+        b + "        elif sug and sug > ma:",
+        b + "            status = f'OK - Vorschlag: Wartezeit auf {sug} s stellen'",
+        b + "        else:",
+        b + "            status = 'OK'",
+        b + "        self.set_state('sensor.marstek_meter_info', state=(int(round(age)) if age is not None else 'unknown'), attributes={",
+        b + "            'friendly_name': 'Zaehler: Alter des letzten Werts', 'unit_of_measurement': 's',",
+        b + "            'icon': 'mdi:timer-outline', 'status': status, 'avg_interval_s': avg, 'max_gap_s': mx,",
+        b + "            'stop_after_s': ma, 'stops_24h': len(st), 'suggested_s': sug, 'samples': len(iv),",
+        b + "            'meter': str(globals().get('GRID_SENSOR') or POWER_SENSOR.get('entity') or '')})",
+        b + "    except Exception as e:",
+        b + "        self.log(f'ZAEHLER-INFO: {e}')",
+        "",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix47_mqtt(src):
+    if '"METER_MAX_AGE_S"' in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '("GRID_SENSOR_INVERT",', startswith=True)
+    L.insert(i + 1, ind(L[i]) + '("METER_MAX_AGE_S",            "number", "STOP wenn Zaehlerwert aelter als",           0, 900, 5, "s", "mdi:timer-alert-outline", "config"),  # FIX 47')
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix47_dashboard(cfg):
+    """FIX 47: Karte 'Zaehler & zweiter Speicher' um Wartezeit und Zaehler-Info ergaenzen, Hilfetext."""
+    if "sensor.marstek_meter_info" in json.dumps(cfg):
+        return cfg
+    for v in cfg.get("views", []):
+        if v.get("path") != "konfiguration":
+            continue
+        for c in (v.get("sections") or [{}])[0].get("cards", []):
+            for r in c.get("entities") or []:
+                if isinstance(r, dict) and r.get("type") == "custom:fold-entity-row" \
+                        and (r.get("head") or {}).get("name") == "Zähler & zweiter Speicher":
+                    ents = r["entities"]
+                    pos = next(k for k, e in enumerate(ents) if e.get("entity") == "switch.marstek_grid_sensor_invert") + 1
+                    ents[pos:pos] = [
+                        {"entity": "number.marstek_meter_max_age_s", "name": "STOP wenn Zählerwert älter als"},
+                        {"type": "section", "label": "Zähler-Info (nur Anzeige)"},
+                        {"entity": "sensor.marstek_meter_info", "name": "Alter des letzten Zählerwerts"},
+                        {"type": "attribute", "entity": "sensor.marstek_meter_info", "attribute": "status", "name": "Zustand"},
+                        {"type": "attribute", "entity": "sensor.marstek_meter_info", "attribute": "avg_interval_s",
+                         "name": "Neue Werte im Schnitt alle", "suffix": " s"},
+                        {"type": "attribute", "entity": "sensor.marstek_meter_info", "attribute": "max_gap_s",
+                         "name": "Längste Pause", "suffix": " s"},
+                        {"type": "attribute", "entity": "sensor.marstek_meter_info", "attribute": "stops_24h",
+                         "name": "STOPs wegen altem Wert (24 h)"},
+                        {"type": "attribute", "entity": "sensor.marstek_meter_info", "attribute": "suggested_s",
+                         "name": "Vorschlag Wartezeit", "suffix": " s"},
+                    ]
+            if c.get("type") == "markdown" and "Zähler &amp; zweiter Speicher: Was bedeutet das?" in c.get("content", ""):
+                a = "Änderungen wirken sofort."
+                assert a in c["content"]
+                c["content"] = c["content"].replace(a, METER_HELP_MD + a, 1)
+        break
+    assert "sensor.marstek_meter_info" in json.dumps(cfg), "Zaehler-Karte nicht gefunden"
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -669,12 +790,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))), ("pv_mqtt.py", lambda t: fix46_mqtt(fix40_mqtt(t))),
+    for fn, f in (("pv_control.py", lambda t: fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))), ("pv_mqtt.py", lambda t: fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))),
                   ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -688,12 +809,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))
+       fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))
+    cfg = fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

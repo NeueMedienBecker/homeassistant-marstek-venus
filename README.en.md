@@ -161,6 +161,8 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Own MQTT broker:** If Home Assistant uses another MQTT broker instead of Mosquitto, the control adopts that broker automatically on install, update and `--fix` (login from the MQTT integration, connection test first). Nothing is changed on the broker or any password, Mosquitto is not installed then. If the test fails, create a user on the broker and enter it in *pv_mqtt_login.json* - it is kept on every update.
 
+**Meter reports rarely:** If the grid meter sends no new value for more than 60 s, the batteries go to STOP for safety. The wait time can be set in the dashboard under *Konfiguration → Zähler & zweiter Speicher*; the **meter info** next to it shows how often the meter really delivers new values and suggests a value.
+
 **Without the installer** (advanced): AppDaemon add-on with the Python packages *pymodbus==3.9.2* and
 *paho-mqtt*, copy the folder *apps/marstek_venus* into the AppDaemon apps folder, add to *apps.yaml*:
 

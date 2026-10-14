@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.16 (2026-10-14)
+
+### Neu
+- **Zaehler-Wartezeit im Dashboard**: 'STOP wenn Zaehlerwert aelter als' (METER_MAX_AGE_S, Standard 60 s) ist unter Konfiguration -> Zaehler & zweiter Speicher einstellbar.
+- **Zaehler-Info im Dashboard** (sensor.marstek_meter_info): Alter des letzten Zaehlerwerts, wie oft im Schnitt neue Werte kommen, laengste Pause, STOPs der letzten 24 h und ein Vorschlag fuer die Wartezeit. Bei Pausen ueber 5 min Hinweis 'Zaehler bzw. WLAN pruefen'.
+- --diag wertet 'Zaehlerwert zu alt -> STOP' im Log aus und nennt die passende Wartezeit.
+
 ## 2.0.15 (2026-10-14)
 
 ### Behoben

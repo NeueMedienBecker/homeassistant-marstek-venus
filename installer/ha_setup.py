@@ -73,6 +73,7 @@ DASH_KEYS = (
     "GRID_STOP_AFTER_S", "PV_BUCKET_ENABLE", "PV_BUCKET_1_TOTAL_W", "PV_BUCKET_2_TOTAL_W",
     "PV_MIN_PER_BAT_W", "PV_ROTATE_ENABLE", "READ_ONLY",
     "GRID_SENSOR", "GRID_SENSOR_INVERT", "EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR",
+    "METER_MAX_AGE_S",
 )
 USER_KEYS = (
     "BATTERY_CONFIG", "POWER_SENSOR", "HA_ENTITY_ID_MAP", "_BATTERY_META_OVERRIDE", "AC_SIGN_INVERT",
@@ -2145,9 +2146,13 @@ def do_diag(version):
         ps = vals.get("POWER_SENSOR") or {}
         line(f"Netz-Zaehler (pv_config): {ps.get('entity')} invert={ps.get('invert')}")
         for k in ("GRID_SENSOR", "GRID_SENSOR_INVERT", "EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR",
-                  "EXT_PV_SENSOR", "READ_ONLY", "CONTROL_ENABLE", "INTERVAL"):
+                  "EXT_PV_SENSOR", "READ_ONLY", "CONTROL_ENABLE", "INTERVAL", "METER_MAX_AGE_S"):
             if k in vals or k in ov:
                 line(f"{k} = {ov.get(k, vals.get(k))}{'  (Dashboard)' if k in ov else ''}")
+        try:
+            ctx["meter_max_age"] = float(ov.get("METER_MAX_AGE_S", vals.get("METER_MAX_AGE_S", 60)))
+        except (TypeError, ValueError):
+            pass
         if ov.get("READ_ONLY", vals.get("READ_ONLY")):
             prob("Beobachtungsmodus ist an - die Batterien bekommen keine Befehle.")
         for n, b in sorted((vals.get("BATTERY_CONFIG") or {}).items()):
@@ -2236,6 +2241,28 @@ def do_diag(version):
         prob("Die Steuerung wird vom MQTT-Broker abgelehnt (Benutzer/Passwort).", "mosq_user" if ctx["local"] else None)
     if re.search(r"No module named 'paho'|paho.* fehlt", full, re.I):
         prob("paho-mqtt ist in AppDaemon nicht installiert.", "paho")
+    ages = [float(x) for x in re.findall(r"ZAEHLER: Wert ist (\d+) s alt", full)]
+    if ages:
+        ma = ctx.get("meter_max_age") or 60
+        # zusammenhaengende Meldungen = eine Pause; die groesste Zahl je Pause ist ihre Laenge
+        gaps, cur = [], 0.0
+        for a_ in ages:
+            if a_ < cur:
+                gaps.append(cur)
+            cur = a_
+        gaps.append(cur)
+        mx = max(gaps)
+        line(f"Zaehler: {len(gaps)} x 'Wert zu alt -> STOP' im Log, laengste Pause ca. {mx:.0f} s "
+             f"(Wartezeit eingestellt: {ma:.0f} s)")
+        if mx <= 300:
+            sug = int(max(60, -(-int(mx * 1.3) // 30) * 30))
+            prob(f"Der Netz-Zaehler liefert zeitweise erst nach bis zu {mx:.0f} s einen neuen Wert - die Batterien "
+                 f"gingen {len(gaps)} x auf STOP. Abhilfe: im Dashboard unter Konfiguration -> 'Zaehler & zweiter "
+                 f"Speicher' -> 'STOP wenn Zaehlerwert aelter als' auf {sug} s stellen (die Zaehler-Info dort zeigt "
+                 f"die Werte laufend).")
+        else:
+            prob(f"Der Netz-Zaehler faellt zeitweise aus (Pausen bis {mx:.0f} s) - bitte Zaehler, Integration und "
+                 f"WLAN pruefen. Die Batterien gehen in dieser Zeit zur Sicherheit auf STOP.")
     if re.search(r"pv_mqtt_login\.json fehlt", full, re.I):
         prob("Die Steuerung meldet: pv_mqtt_login.json fehlt.", "login")
 

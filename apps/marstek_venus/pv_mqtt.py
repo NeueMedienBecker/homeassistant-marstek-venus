@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.15",
+    "sw_version": "2.0.16",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -86,6 +86,7 @@ BASE_PARAMS = [
     # FIX 46: Zaehler & zweiter Speicher
     ("GRID_SENSOR",                "text",   "Netz-Zaehler (Sensor)",                       None, None, None, None, "mdi:transmission-tower", "config"),
     ("GRID_SENSOR_INVERT",         "switch", "Netz-Zaehler: Vorzeichen drehen",             None, None, None, None, "mdi:swap-vertical",      "config"),
+    ("METER_MAX_AGE_S",            "number", "STOP wenn Zaehlerwert aelter als",           0, 900, 5, "s", "mdi:timer-alert-outline", "config"),  # FIX 47
     ("EXT_STORAGE_DISCHARGE_SENSOR", "text", "Zweiter Speicher: Entladeleistung (Sensor)",  None, None, None, None, "mdi:battery-arrow-down-outline", "config"),
     ("EXT_STORAGE_CHARGE_SENSOR",  "text",   "Zweiter Speicher: Ladeleistung (Sensor)",     None, None, None, None, "mdi:battery-arrow-up-outline",   "config"),
     ("EXT_PV_SENSOR",              "text",   "Zweiter Speicher: PV-Leistung (Sensor)",      None, None, None, None, "mdi:solar-power",        "config"),

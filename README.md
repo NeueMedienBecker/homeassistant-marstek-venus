@@ -176,6 +176,8 @@ stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, 
 
 **Eigener MQTT-Broker:** Benutzt Home Assistant nicht Mosquitto, sondern einen anderen MQTT-Broker, übernimmt die Steuerung bei Installation, Update und `--fix` automatisch diesen Broker (Zugangsdaten aus der MQTT-Integration, vorher Verbindungstest). Am Broker und an Passwörtern wird nichts geändert, Mosquitto wird dann nicht installiert. Schlägt der Test fehl, auf dem Broker einen Benutzer anlegen und in *pv_mqtt_login.json* eintragen – er bleibt bei jedem Update erhalten.
 
+**Zähler sendet selten:** Kommt vom Netz-Zähler länger als 60 s kein neuer Wert, gehen die Batterien zur Sicherheit auf STOP. Im Dashboard unter *Konfiguration → Zähler & zweiter Speicher* lässt sich diese Wartezeit einstellen; die **Zähler-Info** daneben zeigt, wie oft der Zähler wirklich neue Werte liefert, und macht einen Vorschlag.
+
 **Ohne Installer** (für Erfahrene): AppDaemon-Add-on mit den Python-Paketen *pymodbus==3.9.2* und *paho-mqtt*,
 den Ordner *apps/marstek_venus* in den AppDaemon-apps-Ordner kopieren, in *apps.yaml* eintragen:
 

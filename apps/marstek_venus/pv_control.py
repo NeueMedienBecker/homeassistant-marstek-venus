@@ -62,6 +62,7 @@ Aenderungen:
 - FIX 44: Nach einer Neuinstallation wartet die BMS-Pflege erst auf PV-Ueberschuss (BMS_CARE_PV_WAIT_H), statt sofort aus dem Netz voll zu laden.
 - FIX 45: BMS-Pflege laedt nur mit dem PV-Ueberschuss, der gerade da ist (pausiert bei Wolken/nachts, nach BMS_CARE_PV_WAIT_H ohne Abschluss mit voller Leistung); geregelte Batterien nehmen der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie.
 - FIX 46: Netz-Zaehler (Sensor, Vorzeichen) und ein zweiter Speicher (Entlade-/Ladeleistung, PV) sind im Dashboard einstellbar (GRID_SENSOR, GRID_SENSOR_INVERT, EXT_STORAGE_*_SENSOR, EXT_PV_SENSOR); BMS-Pflege: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach wird ohne PV durchgeladen.
+- FIX 47: 'STOP wenn Zaehlerwert aelter als' (METER_MAX_AGE_S) ist im Dashboard einstellbar; sensor.marstek_meter_info zeigt Alter des Zaehlerwerts, typischen Abstand neuer Werte, STOPs der letzten 24 h und einen Vorschlag fuer die Wartezeit.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -82,7 +83,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.15"  # FIX 39
+PV_CONTROL_VERSION = "2.0.16"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1856,6 +1857,42 @@ class PVControlApp(Hass):
     # Logging Helpers
     # -------------------------------------------------------------------------
 
+    def _meter_info(self, age, max_age):
+        """FIX 47: sensor.marstek_meter_info fuers Dashboard - nur Anzeige, aendert nichts an der Regelung."""
+        try:
+            now = time.time()
+            stale = bool(getattr(self, '_meter_stale', False))
+            st = [g for g in getattr(self, '_meter_stops', []) if now - g[0] < 86400]  # [Beginn, laengstes Alter]
+            if stale and not getattr(self, '_meter_stale_prev', False):
+                st.append([now, 0.0])
+            if stale and st and age is not None:
+                st[-1][1] = max(st[-1][1], float(age))
+            self._meter_stops, self._meter_stale_prev = st, stale
+            iv = sorted(x for x in getattr(self, '_meter_intervals', []) if x <= 900)
+            avg = int(round(sum(iv) / len(iv))) if iv else None
+            mx = int(round(max([iv[-1] if iv else 0.0] + [g[1] for g in st]))) or None
+            sug = None
+            if mx and mx <= 300 and (len(iv) >= 5 or st):
+                sug = int(max(60, -(-int(mx * 1.3) // 30) * 30))
+            ma = int(round(float(max_age or 0)))
+            if ma <= 0:
+                status = 'Pruefung aus'
+            elif stale:
+                status = 'STOP - Zaehlerwert zu alt'
+            elif mx and mx > 300:
+                status = f'Zaehler faellt zeitweise aus (bis {mx} s) - Zaehler bzw. WLAN pruefen'
+            elif sug and sug > ma:
+                status = f'OK - Vorschlag: Wartezeit auf {sug} s stellen'
+            else:
+                status = 'OK'
+            self.set_state('sensor.marstek_meter_info', state=(int(round(age)) if age is not None else 'unknown'), attributes={
+                'friendly_name': 'Zaehler: Alter des letzten Werts', 'unit_of_measurement': 's',
+                'icon': 'mdi:timer-outline', 'status': status, 'avg_interval_s': avg, 'max_gap_s': mx,
+                'stop_after_s': ma, 'stops_24h': len(st), 'suggested_s': sug, 'samples': len(iv),
+                'meter': str(globals().get('GRID_SENSOR') or POWER_SENSOR.get('entity') or '')})
+        except Exception as e:
+            self.log(f'ZAEHLER-INFO: {e}')
+
     def _ext_power(self, eid):
         """FIX 46: Leistung eines optionalen Sensors in W (kW wird umgerechnet), 0.0 wenn leer/unlesbar."""
         eid = str(eid or '').strip()
@@ -2564,6 +2601,11 @@ class PVControlApp(Hass):
                         except Exception:
                             pass
                     _mage = (time.time() - _mts) if _mts > 0 else 0.0
+                    # FIX 47: Abstand neuer Zaehlerwerte merken (fuer die Zaehler-Info im Dashboard)
+                    if _mts > 0 and _mts != getattr(self, '_meter_prev_ts', 0.0):
+                        if getattr(self, '_meter_prev_ts', 0.0) > 0 and 0 < _mts - self._meter_prev_ts < 3600:
+                            self._meter_intervals = (getattr(self, '_meter_intervals', []) + [_mts - self._meter_prev_ts])[-40:]
+                        self._meter_prev_ts = _mts
                     _mmax_w = float(globals().get("METER_MAX_ABS_W", 25000))
                     _mmax_age = float(globals().get("METER_MAX_AGE_S", 60))
                     self._meter_stale = _mmax_age > 0 and _mage > _mmax_age
@@ -2581,11 +2623,13 @@ class PVControlApp(Hass):
                     else:
                         consumption = _mval
                         self._meter_last_good = (_mval, time.time())
+                    self._meter_info(_mage, _mmax_age)  # FIX 47
                 except Exception as e:
                     _lg = getattr(self, "_meter_last_good", None)
                     _mmax_age = float(globals().get("METER_MAX_AGE_S", 60))
                     self._meter_stale = (not _lg) or (_mmax_age > 0 and (time.time() - _lg[1]) > _mmax_age)
                     self.log(f"Zaehler nicht lesbar ({e}){' -> Batterien auf STOP' if self._meter_stale else ''}", level="WARNING")
+                    self._meter_info(None, _mmax_age)  # FIX 47
 
             # 1b) HA Sensor Export (treiber-spezifisch: Modbus oder API)
             # PARALLEL (je Batterie ein Thread): HA-Export + read_state vorab.

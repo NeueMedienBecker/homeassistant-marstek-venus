@@ -2570,6 +2570,51 @@
            "name": "Vorzeichen drehen"
           },
           {
+           "entity": "number.marstek_meter_max_age_s",
+           "name": "STOP wenn Zählerwert älter als"
+          },
+          {
+           "type": "section",
+           "label": "Zähler-Info (nur Anzeige)"
+          },
+          {
+           "entity": "sensor.marstek_meter_info",
+           "name": "Alter des letzten Zählerwerts"
+          },
+          {
+           "type": "attribute",
+           "entity": "sensor.marstek_meter_info",
+           "attribute": "status",
+           "name": "Zustand"
+          },
+          {
+           "type": "attribute",
+           "entity": "sensor.marstek_meter_info",
+           "attribute": "avg_interval_s",
+           "name": "Neue Werte im Schnitt alle",
+           "suffix": " s"
+          },
+          {
+           "type": "attribute",
+           "entity": "sensor.marstek_meter_info",
+           "attribute": "max_gap_s",
+           "name": "Längste Pause",
+           "suffix": " s"
+          },
+          {
+           "type": "attribute",
+           "entity": "sensor.marstek_meter_info",
+           "attribute": "stops_24h",
+           "name": "STOPs wegen altem Wert (24 h)"
+          },
+          {
+           "type": "attribute",
+           "entity": "sensor.marstek_meter_info",
+           "attribute": "suggested_s",
+           "name": "Vorschlag Wartezeit",
+           "suffix": " s"
+          },
+          {
            "type": "section",
            "label": "Zweiter Speicher (z. B. Hybrid-Wechselrichter) – leer lassen, wenn keiner da ist"
           },
@@ -2591,7 +2636,7 @@
       },
       {
        "type": "markdown",
-       "content": "<details><summary>ℹ️ <b>Zähler &amp; zweiter Speicher: Was bedeutet das?</b></summary>\n\n**Netz-Zähler (Sensor):** Der Home-Assistant-Sensor, der die Leistung am Hausanschluss misst (in W oder kW). Die Regelung versucht, diesen Wert auf 0 zu halten. **Positiv muss Bezug aus dem Netz sein, negativ Einspeisung.** Zeigt dein Zähler es andersherum, schalte **Vorzeichen drehen** ein.\n\nAktuell: `{{ states('text.marstek_grid_sensor') }}` → **{{ states(states('text.marstek_grid_sensor')) }} {{ state_attr(states('text.marstek_grid_sensor'),'unit_of_measurement') }}**\n\n**Zweiter Speicher:** Hast du noch einen anderen Speicher, der selbst auf 0 am Hausanschluss regelt (z. B. ein Hybrid-Wechselrichter wie SMA, Fronius, Huawei), dann sieht die Venus am Zähler nur noch 0 W und weiß nicht, dass der andere Speicher gerade aushilft. Trage hier dessen **Entladeleistung**, **Ladeleistung** und die **PV-Leistung** ein (alles Sensoren in W oder kW). Die Regelung rechnet dann so:\n\n- **Abends:** Entlädt der andere Speicher, zählt das wie Netzbezug → die Venus übernimmt den Hausverbrauch **zuerst**, der andere Speicher bleibt Reserve.\n- **Tagsüber:** Lädt der andere Speicher aus der PV, bleibt das unsichtbar → **erst er wird voll**, die Venus lädt nur mit dem, was dann noch übrig ist. Ist die Sonne weg, hört die Venus auf.\n- Lädt der andere Speicher mehr, als die PV liefert, kommt der Strom aus der Venus → das zählt wie Einspeisung und die Venus regelt zurück.\n\nGibt es nur **einen** Sensor für den anderen Speicher (+ = Entladen, − = Laden), trage ihn bei **Entladeleistung** ein und lass **Ladeleistung** leer. Ohne zweiten Speicher: alle drei Felder leer lassen.\n\nÄnderungen wirken sofort. **Einstellungen fest übernehmen** (unten) schreibt sie dauerhaft in `pv_config.py`.\n\n</details>"
+       "content": "<details><summary>ℹ️ <b>Zähler &amp; zweiter Speicher: Was bedeutet das?</b></summary>\n\n**Netz-Zähler (Sensor):** Der Home-Assistant-Sensor, der die Leistung am Hausanschluss misst (in W oder kW). Die Regelung versucht, diesen Wert auf 0 zu halten. **Positiv muss Bezug aus dem Netz sein, negativ Einspeisung.** Zeigt dein Zähler es andersherum, schalte **Vorzeichen drehen** ein.\n\nAktuell: `{{ states('text.marstek_grid_sensor') }}` → **{{ states(states('text.marstek_grid_sensor')) }} {{ state_attr(states('text.marstek_grid_sensor'),'unit_of_measurement') }}**\n\n**Zweiter Speicher:** Hast du noch einen anderen Speicher, der selbst auf 0 am Hausanschluss regelt (z. B. ein Hybrid-Wechselrichter wie SMA, Fronius, Huawei), dann sieht die Venus am Zähler nur noch 0 W und weiß nicht, dass der andere Speicher gerade aushilft. Trage hier dessen **Entladeleistung**, **Ladeleistung** und die **PV-Leistung** ein (alles Sensoren in W oder kW). Die Regelung rechnet dann so:\n\n- **Abends:** Entlädt der andere Speicher, zählt das wie Netzbezug → die Venus übernimmt den Hausverbrauch **zuerst**, der andere Speicher bleibt Reserve.\n- **Tagsüber:** Lädt der andere Speicher aus der PV, bleibt das unsichtbar → **erst er wird voll**, die Venus lädt nur mit dem, was dann noch übrig ist. Ist die Sonne weg, hört die Venus auf.\n- Lädt der andere Speicher mehr, als die PV liefert, kommt der Strom aus der Venus → das zählt wie Einspeisung und die Venus regelt zurück.\n\nGibt es nur **einen** Sensor für den anderen Speicher (+ = Entladen, − = Laden), trage ihn bei **Entladeleistung** ein und lass **Ladeleistung** leer. Ohne zweiten Speicher: alle drei Felder leer lassen.\n\n**Zähler-Überwachung:** Kommt vom Netz-Zähler länger kein neuer Wert, weiß die Steuerung nicht mehr, was am Hausanschluss passiert – dann gehen die Batterien zur Sicherheit auf **STOP**. **STOP wenn Zählerwert älter als** legt fest, nach wie vielen Sekunden das passiert (Standard 60 s, 0 = Prüfung aus).\n\nManche Zähler (z. B. EcoTracker, Shelly, Tibber Pulse) schicken nur alle paar Sekunden oder nur bei einer Änderung einen neuen Wert. Unter **Zähler-Info** siehst du, wie oft wirklich neue Werte kommen, die längste Pause und wie oft heute schon wegen eines alten Werts gestoppt wurde. Steht dort ein **Vorschlag**, stelle die Wartezeit auf diesen Wert. Bitte nicht viel höher als nötig: Fällt der Zähler wirklich aus, regelt die Steuerung so lange mit dem letzten Wert weiter.\n\nÄnderungen wirken sofort. **Einstellungen fest übernehmen** (unten) schreibt sie dauerhaft in `pv_config.py`.\n\n</details>"
       },
       {
        "type": "entities",
