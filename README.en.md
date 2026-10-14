@@ -165,6 +165,8 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Limits per battery:** max. charge and discharge power, min/max SoC and capacity of each Venus can be changed in the dashboard under *Konfiguration → Hauptschalter & Batterien → Venus X → Grenzwerte*.
 
+**Cell voltages (Modbus only):** With a Modbus connection the *Batterien* tab shows the highest and lowest cell voltage and the difference in mV per Venus. If the difference stays above the limit (default 100 mV), the BMS care charge is started early - only with PV surplus. The WLAN API does not provide cell voltages.
+
 **Without the installer** (advanced): AppDaemon add-on with the Python packages *pymodbus==3.9.2* and
 *paho-mqtt*, copy the folder *apps/marstek_venus* into the AppDaemon apps folder, add to *apps.yaml*:
 

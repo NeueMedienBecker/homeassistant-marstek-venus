@@ -742,6 +742,276 @@ def fix48_dashboard(cfg):
     return cfg
 
 
+CELL_REGS = (
+    '    # FIX 50: hoechste / niedrigste Zellspannung (nur Modbus, Venus E alle Generationen; Register 37007/37008, 1 mV)',
+    '    "cell_voltage_max":         {"enabled": True,  "addr": 37007, "cnt": 1, "type": "u16", "scale": 0.001,  "unit": "V",   "prec": 3, "name": "Cell Voltage Max"},',
+    '    "cell_voltage_min":         {"enabled": True,  "addr": 37008, "cnt": 1, "type": "u16", "scale": 0.001,  "unit": "V",   "prec": 3, "name": "Cell Voltage Min"},',
+    '',
+)
+CELL_CFG = """# FIX 50: BMS-Pflege vorziehen, wenn die Zellspannungen weit auseinanderliegen (nur bei Modbus-Anbindung,
+# die WLAN-API liefert keine Zellspannungen). Unterschied hoechste - niedrigste Zelle in mV, 0 = aus.
+# Vorgezogen wird nur mit PV-Ueberschuss (nie aus dem Netz) und fruehestens BMS_CARE_CELL_MIN_DAYS nach der
+# letzten Vollladung; der Unterschied muss BMS_CARE_CELL_DELTA_MIN_S Sekunden am Stueck anliegen.
+BMS_CARE_CELL_DELTA_MV = 100
+BMS_CARE_CELL_DELTA_MIN_S = 1800
+BMS_CARE_CELL_MIN_DAYS = 3
+"""
+CELL_HELP_MD = """
+- **Vorziehen ab Zell-Unterschied** (nur bei **Modbus**): Liegen höchste und niedrigste Zellspannung einer Venus mindestens 30 min so weit auseinander, startet ihre Vollladung schon vor den 10 Tagen – damit das BMS die Zellen ausgleichen kann. Nur mit PV-Überschuss, nie aus dem Netz. 0 = aus, Standard 100 mV. Die WLAN-API liefert keine Zellspannungen, dort gibt es diese Funktion nicht.
+- **Vorziehen frühestens nach:** so viele Tage nach der letzten Vollladung (Standard 3)."""
+
+
+def fix50_config(src):
+    if "BMS_CARE_CELL_DELTA_MV" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '"temp_cell_min":', startswith=True)
+    L[i + 1:i + 1] = [""] + list(CELL_REGS)[:-1]
+    i = find(L, "BMS_CARE_PV_WAIT_H = 48")
+    L[i + 1:i + 1] = CELL_CFG.rstrip("\n").split("\n")
+    out = "\n".join(L)
+    compile(out, "pv_config.py", "exec")
+    return out
+
+
+def fix50_control(src):
+    """FIX 50: Zellspannungs-Unterschied je Batterie (nur Modbus) anzeigen und BMS-Pflege vorziehen."""
+    if "FIX 50" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 49:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 50: hoechste/niedrigste Zellspannung (Modbus 37007/37008) und Unterschied in mV je Batterie "
+                                "(sensor.marstekvenus_N_cell_voltage_delta, nur Modbus); liegt der Unterschied >= BMS_CARE_CELL_DELTA_MV "
+                                "laenger an, wird die BMS-Pflege vorgezogen (nur mit PV-Ueberschuss, fruehestens nach BMS_CARE_CELL_MIN_DAYS).")
+    i = find(L, 'for _k46 in ("EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR"):')
+    L[i + 3:i + 3] = [
+        "",
+        "# FIX 50: Zellspannungen (nur Modbus) - Standardwerte und Register, falls eine alte pv_config.py sie nicht kennt",
+        'for _k50, _v50 in (("BMS_CARE_CELL_DELTA_MV", 100), ("BMS_CARE_CELL_DELTA_MIN_S", 1800), ("BMS_CARE_CELL_MIN_DAYS", 3)):',
+        "    if _k50 not in globals():",
+        "        globals()[_k50] = _v50",
+        "try:",
+        '    HA_REGMAP.setdefault("cell_voltage_max", {"enabled": True, "addr": 37007, "cnt": 1, "type": "u16", "scale": 0.001, "unit": "V", "prec": 3, "name": "Cell Voltage Max"})',
+        '    HA_REGMAP.setdefault("cell_voltage_min", {"enabled": True, "addr": 37008, "cnt": 1, "type": "u16", "scale": 0.001, "unit": "V", "prec": 3, "name": "Cell Voltage Min"})',
+        "except NameError:",
+        "    pass",
+    ]
+    # Modbus-Export: Zell-Register, die das Geraet nicht kennt, 6 h ueberspringen statt die Verbindung als schlecht zu markieren
+    i = find(L, 'keys = [k for k, v in HA_REGMAP.items() if v.get("enabled", True)]')
+    b = ind(L[i])
+    L.insert(i + 1, b + "_cu = getattr(self, '_cell_unsupported', {}).get(battery_name, 0)  # FIX 50")
+    L.insert(i + 2, b + "keys = [k for k in keys if not (k.startswith('cell_voltage_') and time.time() < _cu)]")
+    i = find(L, "raw = self._read_reg_value(client, cfg[\"unit\"], spec, battery_name)")
+    j = find(L, "if raw is None:", i)
+    bb = ind(L[j])
+    L[j:j] = [
+        bb + "if raw is None and key.startswith('cell_voltage_'):  # FIX 50: Register evtl. nicht vorhanden",
+        bb + "    self.__dict__.setdefault('_cell_unsupported', {})[battery_name] = time.time() + 6 * 3600",
+        bb + "    self.log(f'[{battery_name}] Zellspannung (Register {spec.get(\"addr\")}) nicht lesbar - 6 h pausiert', level='WARNING')",
+        bb + "    continue",
+    ]
+    i = find(L, "self._export_computed_sensors(battery_name, key, val)")
+    L.insert(i + 1, ind(L[i]) + "if key.startswith('cell_voltage_'):  # FIX 50")
+    L.insert(i + 2, ind(L[i]) + "    self._cell_store(battery_name, key, val)")
+    # Methoden
+    i = find(L, "def _kwh_guard(self, eid, v):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _cell_store(self, name, key, val):",
+        b + "    \"\"\"FIX 50: Zellspannung merken und Unterschied auswerten (nur plausible Werte 2,0-4,5 V).\"\"\"",
+        b + "    try:",
+        b + "        v = float(val)",
+        b + "    except (TypeError, ValueError):",
+        b + "        return",
+        b + "    if not 2.0 <= v <= 4.5:",
+        b + "        return",
+        b + "    now = time.time()",
+        b + "    c = self.__dict__.setdefault('_cell_v', {}).setdefault(name, {})",
+        b + "    c['max' if key.endswith('_max') else 'min'] = (v, now)",
+        b + "    if 'max' not in c or 'min' not in c or abs(c['max'][1] - c['min'][1]) > 600:",
+        b + "        return",
+        b + "    d = int(round((c['max'][0] - c['min'][0]) * 1000))",
+        b + "    if d < 0:",
+        b + "        return",
+        b + "    c['delta'] = (d, now)",
+        b + "    lim = int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0)",
+        b + "    if lim > 0 and d >= lim:",
+        b + "        c.setdefault('high_since', now)",
+        b + "    elif lim <= 0 or d < lim * 0.8:",
+        b + "        c.pop('high_since', None)",
+        "",
+        b + "def _cell_early(self, name):",
+        b + "    \"\"\"FIX 50: True, wenn der Zell-Unterschied lange genug ueber der Grenze liegt (frische Modbus-Werte).\"\"\"",
+        b + "    c = (getattr(self, '_cell_v', {}) or {}).get(name) or {}",
+        b + "    hs, dl = c.get('high_since'), c.get('delta')",
+        b + "    if not hs or not dl or time.time() - dl[1] > 900 or int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0) <= 0:",
+        b + "        return False",
+        b + "    return time.time() - hs >= float(globals().get('BMS_CARE_CELL_DELTA_MIN_S', 1800))",
+        "",
+        b + "def _cell_publish(self, name):",
+        b + "    \"\"\"FIX 50: sensor.<prefix>_N_cell_voltage_delta fuers Dashboard (nur Anzeige).\"\"\"",
+        b + "    try:",
+        b + "        c = (getattr(self, '_cell_v', {}) or {}).get(name) or {}",
+        b + "        dl = c.get('delta')",
+        b + "        lim = int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0)",
+        b + "        fresh = bool(dl) and time.time() - dl[1] <= 900",
+        b + "        if fresh:",
+        b + "            state = dl[0]",
+        b + "            if self._cell_early(name):",
+        b + "                status = 'hoch - BMS-Pflege wird vorgezogen (sobald PV-Ueberschuss da ist)'",
+        b + "            elif c.get('high_since'):",
+        b + "                status = f\"hoch seit {int((time.time() - c['high_since']) // 60)} min\"",
+        b + "            else:",
+        b + "                status = 'OK' if lim > 0 else 'OK (Vorziehen aus)'",
+        b + "        else:",
+        b + "            state = 'unknown'",
+        b + "            status = ('nur mit Modbus-Anbindung verfuegbar' if isinstance(self._drivers.get(name), ApiDriver)",
+        b + "                      else 'noch keine Werte')",
+        b + "        idx = BATTERY_META.get(name, {}).get('idx', name)",
+        b + "        self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, attributes={",
+        b + "            'friendly_name': f'MarstekVenus {idx} Cell Voltage Delta', 'unit_of_measurement': 'mV',",
+        b + "            'icon': 'mdi:battery-heart-variant', 'status': status, 'limit_mv': lim,",
+        b + "            'max_v': (c.get('max') or (None,))[0] if fresh else None,",
+        b + "            'min_v': (c.get('min') or (None,))[0] if fresh else None})",
+        b + "    except Exception as e:",
+        b + "        self.log(f'ZELLSPANNUNG {name}: {e}')",
+        "",
+    ]
+    # Anzeige je Zyklus
+    i = find(L, "# 5) Mode-Wechsel")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "# FIX 50: Zellspannungs-Unterschied je Batterie (nur Modbus)",
+        b + "for n in self.batteries.keys():",
+        b + "    self._cell_publish(n)",
+        "",
+    ]
+    # BMS-Pflege vorziehen
+    i = find(L, "if last > 0 and (now_ts - last) < (FULL_CHARGE_INTERVAL_DAYS * 86400):")
+    b = ind(L[i])
+    assert L[i + 1].strip() == "continue"
+    L[i + 1:i + 2] = [
+        b + "    # FIX 50: vorziehen bei grossem Zell-Unterschied - nur Modbus, nur mit PV-Ueberschuss, Mindestabstand",
+        b + "    if not (self._cell_early(name) and bool(getattr(self, 'pv_surplus', False))",
+        b + "            and (now_ts - last) >= float(globals().get('BMS_CARE_CELL_MIN_DAYS', 3)) * 86400):",
+        b + "        continue",
+        b + "    self.log(f\"BMS {name}: Zellspannungen {((getattr(self, '_cell_v', {}) or {}).get(name) or {}).get('delta', ('?',))[0]} mV \"",
+        b + "             f\"auseinander -> BMS-Pflege vorgezogen (nur mit PV-Ueberschuss)\")",
+        b + "    return name",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix50_mqtt(src):
+    if '"BMS_CARE_CELL_DELTA_MV"' in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '("BMS_CARE_PV_WAIT_H",', startswith=True)
+    L[i + 1:i + 1] = [
+        ind(L[i]) + '("BMS_CARE_CELL_DELTA_MV",    "number", "BMS-Pflege vorziehen ab Zell-Unterschied", 0, 500, 5, "mV", "mdi:battery-heart-variant", None),  # FIX 50',
+        ind(L[i]) + '("BMS_CARE_CELL_MIN_DAYS",    "number", "BMS-Pflege vorziehen fruehestens nach", 1, 30, 1, "d",  "mdi:calendar-clock",       None),  # FIX 50',
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix50_dashboard(cfg):
+    """FIX 50: Batterien-Tab: Zell-Unterschied; Konfiguration/BMS-Pflege: zwei Einstellungen + Hilfe."""
+    if "cell_voltage_delta" in json.dumps(cfg):
+        return cfg
+    hits = {"bat": 0, "cfg": 0, "help": 0}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("entities"), list):
+                new = []
+                for r in o["entities"]:
+                    new.append(r)
+                    if not isinstance(r, dict):
+                        continue
+                    m = re.match(r"^sensor\.bms_battery(\d+)_phase$", r.get("entity") or "")
+                    if m and r.get("type") == "attribute" and r.get("attribute") == "next_due":
+                        e = f"sensor.marstekvenus_{m.group(1)}_cell_voltage_delta"
+                        new += [
+                            {"entity": e, "name": "Zellspannung: Unterschied", "icon": "mdi:battery-heart-variant"},
+                            {"type": "attribute", "entity": e, "attribute": "status", "name": "Zellen", "icon": "mdi:information-outline"},
+                            {"type": "attribute", "entity": e, "attribute": "max_v", "name": "Höchste Zelle", "suffix": " V", "icon": "mdi:arrow-up-bold"},
+                            {"type": "attribute", "entity": e, "attribute": "min_v", "name": "Niedrigste Zelle", "suffix": " V", "icon": "mdi:arrow-down-bold"},
+                        ]
+                        hits["bat"] += 1
+                    if r.get("entity") == "number.marstek_bms_care_pv_wait_h":
+                        new += [{"entity": "number.marstek_bms_care_cell_delta_mv", "name": "Vorziehen ab Zell-Unterschied (nur Modbus)"},
+                                {"entity": "number.marstek_bms_care_cell_min_days", "name": "Vorziehen frühestens nach"}]
+                        hits["cfg"] += 1
+                o["entities"] = new
+            if o.get("type") == "markdown" and "BMS-Pflege: Tabelle Jetzt/Original" in str(o.get("content", "")):
+                a = "(Standard 48 h)."
+                if a in o["content"]:
+                    o["content"] = o["content"].replace(a, a + CELL_HELP_MD, 1)
+                    hits["help"] += 1
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+
+    walk(cfg)
+    assert hits["bat"] >= 1 and hits["cfg"] == 1 and hits["help"] == 1, hits
+    return cfg
+
+
+BMS_HELP_MD = """<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>
+
+**Wozu?** Lithium-Akkus zeigen den Ladestand nur dann genau an und gleichen ihre Zellen nur dann aus, wenn sie ab und zu **ganz voll** werden. Den Ausgleich (Zell-Balancing) macht das BMS in der Venus selbst – die Steuerung sorgt nur dafür, dass jede Batterie regelmäßig dorthin kommt. Es wird höchstens **eine Batterie pro Tag** voll geladen, die anderen regeln ganz normal weiter.
+
+**So läuft eine BMS-Pflege ab:**
+1. **Fällig:** nach „Vollladung alle“ (Standard 10 Tage) – oder früher, wenn die Zellspannungen zu weit auseinanderliegen (nur Modbus, siehe unten).
+2. **Laden:** Mit „Sonne bevorzugen“ nur mit PV-Überschuss; bei Wolken oder nachts macht sie Pause. Ist sie nach „Max. Warten auf Sonne“ immer noch nicht voll, lädt sie auch aus dem Netz.
+3. **Voll:** Erreicht der Ladestand „Vollladung bis“, gilt die Pflege als erledigt. Die Batterie bekommt dann **45 min Ruhe** (kein Laden, kein Entladen) – in dieser Zeit gleicht das BMS die Zellen aus.
+4. **Danach** wird sie noch **30 min nicht entladen**, dann regelt sie wieder normal mit.
+
+**Die Einstellungen:**
+- **BMS-Pflege (Vollladung):** ein/aus. Empfehlung: an.
+- **Vollladung bis** (Standard 99 %): ab diesem Ladestand gilt die Batterie als voll. **Warum 99 und nicht 100 %?** Manche Akkus zeigen 100 % erst sehr spät oder gar nicht an, auch wenn sie praktisch voll sind. Mit 99 % kann die Pflege nicht „hängen bleiben“. 100 % ist möglich und gleicht etwas gründlicher aus – zeigt die Batterie aber nie 100 %, läuft die Pflege so lange weiter und blockiert die Pflege der anderen.
+- **Vollladung alle:** wie oft, in Tagen (10 Tage ≈ 3× im Monat).
+- **Sonne bevorzugen:** an = eine fällige Vollladung lädt nur mit PV-Überschuss.
+- **Max. Warten auf Sonne:** kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h ab Fälligkeit).
+- **Vorziehen ab Zell-Unterschied** (nur bei **Modbus**): Liegen höchste und niedrigste Zellspannung einer Venus mindestens 30 min so weit auseinander, startet ihre Pflege schon früher – nur mit PV-Überschuss, nie aus dem Netz. 0 = aus, Standard 100 mV. Über die WLAN-API gibt es keine Zellspannungen, dort entfällt das.
+- **Vorziehen frühestens nach:** so viele Tage nach der letzten Vollladung (Standard 3).
+
+Wann eine Batterie zuletzt dran war und wann sie wieder fällig ist, steht im Tab **Batterien** bei der jeweiligen Venus.
+</details>"""
+
+
+def fix51_dashboard(cfg):
+    """FIX 51: Hilfetext BMS-Pflege klarer (Ablauf, Warum 99 %)."""
+    hits = [0]
+
+    def walk(o):
+        if isinstance(o, dict):
+            c = o.get("content")
+            if o.get("type") == "markdown" and isinstance(c, str) and "BMS-Pflege: Tabelle Jetzt/Original" in c \
+                    and "Warum 99 und nicht 100" not in c:
+                a = c.find("<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>")
+                assert a > 0
+                b = c.rfind("</details>")
+                b = c.rfind("</details>", 0, b)
+                assert b > a
+                o["content"] = c[:a] + BMS_HELP_MD + c[b + len("</details>"):]
+                hits[0] += 1
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+
+    walk(cfg)
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1004,12 +1274,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))), ("pv_mqtt.py", lambda t: fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))),
-                  ("pv_config.py", fix40_config)):
+    for fn, f in (("pv_control.py", lambda t: fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))), ("pv_mqtt.py", lambda t: fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))),
+                  ("pv_config.py", lambda t: fix50_config(fix40_config(t)))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -1023,12 +1293,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))
-    wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
+       fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))
+    wr(os.path.join(dst, "pv_config.py"), fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))
+    cfg = fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.0.18 (2026-10-14)
+
+### Neu
+- **Hilfetext BMS-Pflege** verstaendlicher: Ablauf in 4 Schritten, alle Einstellungen erklaert, warum 'Vollladung bis' 99 % statt 100 %.
+- **Zellspannungen (nur Modbus)**: hoechste und niedrigste Zellspannung (Register 37007/37008) und der Unterschied in mV je Venus im Batterien-Tab (sensor.marstekvenus_N_cell_voltage_delta). Bei Anbindung per WLAN-API steht dort 'nur mit Modbus-Anbindung verfuegbar' - die API liefert keine Zellspannungen.
+- **BMS-Pflege vorziehen**: Liegt der Unterschied mind. 30 min ueber 'Vorziehen ab Zell-Unterschied' (Standard 100 mV, 0 = aus), startet die Vollladung schon vor den 10 Tagen - nur mit PV-Ueberschuss, fruehestens 3 Tage nach der letzten (einstellbar). Kennt eine Venus die Register nicht, werden sie 6 h uebersprungen.
+
 ## 2.0.17 (2026-10-14)
 
 ### Neu

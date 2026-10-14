@@ -485,6 +485,34 @@
          "icon": "mdi:calendar-clock"
         },
         {
+         "entity": "sensor.marstekvenus_1_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_1_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_1_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_1_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
+        },
+        {
          "entity": "sensor.pv_battery1_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -777,6 +805,34 @@
          "attribute": "next_due",
          "name": "BMS-Pflege wieder faellig",
          "icon": "mdi:calendar-clock"
+        },
+        {
+         "entity": "sensor.marstekvenus_2_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_2_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_2_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_2_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
         },
         {
          "entity": "sensor.pv_battery2_comm_mode",
@@ -1073,6 +1129,34 @@
          "icon": "mdi:calendar-clock"
         },
         {
+         "entity": "sensor.marstekvenus_3_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_3_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_3_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_3_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
+        },
+        {
          "entity": "sensor.pv_battery3_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -1367,6 +1451,34 @@
          "icon": "mdi:calendar-clock"
         },
         {
+         "entity": "sensor.marstekvenus_4_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_4_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_4_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_4_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
+        },
+        {
          "entity": "sensor.pv_battery4_comm_mode",
          "name": "Kommunikation (aktiver Weg)"
         },
@@ -1659,6 +1771,34 @@
          "attribute": "next_due",
          "name": "BMS-Pflege wieder faellig",
          "icon": "mdi:calendar-clock"
+        },
+        {
+         "entity": "sensor.marstekvenus_5_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_5_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_5_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_5_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
         },
         {
          "entity": "sensor.pv_battery5_comm_mode",
@@ -1960,6 +2100,34 @@
          "attribute": "next_due",
          "name": "BMS-Pflege wieder faellig",
          "icon": "mdi:calendar-clock"
+        },
+        {
+         "entity": "sensor.marstekvenus_6_cell_voltage_delta",
+         "name": "Zellspannung: Unterschied",
+         "icon": "mdi:battery-heart-variant"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_6_cell_voltage_delta",
+         "attribute": "status",
+         "name": "Zellen",
+         "icon": "mdi:information-outline"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_6_cell_voltage_delta",
+         "attribute": "max_v",
+         "name": "Höchste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-up-bold"
+        },
+        {
+         "type": "attribute",
+         "entity": "sensor.marstekvenus_6_cell_voltage_delta",
+         "attribute": "min_v",
+         "name": "Niedrigste Zelle",
+         "suffix": " V",
+         "icon": "mdi:arrow-down-bold"
         },
         {
          "entity": "sensor.pv_battery6_comm_mode",
@@ -2858,6 +3026,14 @@
           {
            "entity": "number.marstek_bms_care_pv_wait_h",
            "name": "Max. Warten auf Sonne"
+          },
+          {
+           "entity": "number.marstek_bms_care_cell_delta_mv",
+           "name": "Vorziehen ab Zell-Unterschied (nur Modbus)"
+          },
+          {
+           "entity": "number.marstek_bms_care_cell_min_days",
+           "name": "Vorziehen frühestens nach"
           }
          ]
         }
@@ -2868,7 +3044,7 @@
        "grid_options": {
         "columns": "full"
        },
-       "content": "<details><summary>📋 <b>BMS-Pflege: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('ENABLE_BMS_CARE','switch','BMS-Pflege (Vollladung)',''),('FULL_CHARGE_SOC','number','Vollladung bis','%'),('FULL_CHARGE_INTERVAL_DAYS','number','Vollladung alle','Tage'),('BMS_CARE_REQUIRE_PV','switch','Sonne bevorzugen',''),('BMS_CARE_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Was ist das?** Lithium-Akkus sollten ab und zu ganz voll werden – nur dann gleicht das Batterie-Management (BMS) die Zellen aus und die %-Anzeige bleibt genau. Es wird immer nur **eine Batterie pro Tag** voll geladen.\n\n- **BMS-Pflege:** Regelmäßige Vollladung ein/aus. Empfehlung: an.\n- **Vollladung bis:** Ab diesem Ladestand gilt sie als voll. Danach bleibt sie **45 min voll** (Zellausgleich) und wird weitere **30 min nicht entladen**.\n- **Vollladung alle:** Wie oft (10 Tage ≈ 3× im Monat).\n- **Sonne bevorzugen:** An = eine fällige Vollladung startet erst bei **PV-Überschuss**.\n- **Max. Warten auf Sonne:** Kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h).\n</details>\n</details>"
+       "content": "<details><summary>📋 <b>BMS-Pflege: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('ENABLE_BMS_CARE','switch','BMS-Pflege (Vollladung)',''),('FULL_CHARGE_SOC','number','Vollladung bis','%'),('FULL_CHARGE_INTERVAL_DAYS','number','Vollladung alle','Tage'),('BMS_CARE_REQUIRE_PV','switch','Sonne bevorzugen',''),('BMS_CARE_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Wozu?** Lithium-Akkus zeigen den Ladestand nur dann genau an und gleichen ihre Zellen nur dann aus, wenn sie ab und zu **ganz voll** werden. Den Ausgleich (Zell-Balancing) macht das BMS in der Venus selbst – die Steuerung sorgt nur dafür, dass jede Batterie regelmäßig dorthin kommt. Es wird höchstens **eine Batterie pro Tag** voll geladen, die anderen regeln ganz normal weiter.\n\n**So läuft eine BMS-Pflege ab:**\n1. **Fällig:** nach „Vollladung alle“ (Standard 10 Tage) – oder früher, wenn die Zellspannungen zu weit auseinanderliegen (nur Modbus, siehe unten).\n2. **Laden:** Mit „Sonne bevorzugen“ nur mit PV-Überschuss; bei Wolken oder nachts macht sie Pause. Ist sie nach „Max. Warten auf Sonne“ immer noch nicht voll, lädt sie auch aus dem Netz.\n3. **Voll:** Erreicht der Ladestand „Vollladung bis“, gilt die Pflege als erledigt. Die Batterie bekommt dann **45 min Ruhe** (kein Laden, kein Entladen) – in dieser Zeit gleicht das BMS die Zellen aus.\n4. **Danach** wird sie noch **30 min nicht entladen**, dann regelt sie wieder normal mit.\n\n**Die Einstellungen:**\n- **BMS-Pflege (Vollladung):** ein/aus. Empfehlung: an.\n- **Vollladung bis** (Standard 99 %): ab diesem Ladestand gilt die Batterie als voll. **Warum 99 und nicht 100 %?** Manche Akkus zeigen 100 % erst sehr spät oder gar nicht an, auch wenn sie praktisch voll sind. Mit 99 % kann die Pflege nicht „hängen bleiben“. 100 % ist möglich und gleicht etwas gründlicher aus – zeigt die Batterie aber nie 100 %, läuft die Pflege so lange weiter und blockiert die Pflege der anderen.\n- **Vollladung alle:** wie oft, in Tagen (10 Tage ≈ 3× im Monat).\n- **Sonne bevorzugen:** an = eine fällige Vollladung lädt nur mit PV-Überschuss.\n- **Max. Warten auf Sonne:** kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h ab Fälligkeit).\n- **Vorziehen ab Zell-Unterschied** (nur bei **Modbus**): Liegen höchste und niedrigste Zellspannung einer Venus mindestens 30 min so weit auseinander, startet ihre Pflege schon früher – nur mit PV-Überschuss, nie aus dem Netz. 0 = aus, Standard 100 mV. Über die WLAN-API gibt es keine Zellspannungen, dort entfällt das.\n- **Vorziehen frühestens nach:** so viele Tage nach der letzten Vollladung (Standard 3).\n\nWann eine Batterie zuletzt dran war und wann sie wieder fällig ist, steht im Tab **Batterien** bei der jeweiligen Venus.\n</details>\n</details>"
       },
       {
        "type": "entities",

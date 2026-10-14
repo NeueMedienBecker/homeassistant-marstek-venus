@@ -286,6 +286,10 @@ HA_REGMAP = {
     # Minimaltemperatur der kaeltesten Zelle
     "temp_cell_min":            {"enabled": False, "addr": 35011, "cnt": 1, "type": "s16", "scale": 0.1,    "unit": "C",   "prec": 1, "name": "Temp Cell Min"},
 
+    # FIX 50: hoechste / niedrigste Zellspannung (nur Modbus, Venus E alle Generationen; Register 37007/37008, 1 mV)
+    "cell_voltage_max":         {"enabled": True,  "addr": 37007, "cnt": 1, "type": "u16", "scale": 0.001,  "unit": "V",   "prec": 3, "name": "Cell Voltage Max"},
+    "cell_voltage_min":         {"enabled": True,  "addr": 37008, "cnt": 1, "type": "u16", "scale": 0.001,  "unit": "V",   "prec": 3, "name": "Cell Voltage Min"},
+
     # Wechselrichter-Zustandscode (herstellerspezifisch, fuer Diagnose)
     "inverter_state":           {"enabled": True,  "addr": 35100, "cnt": 1, "type": "u16", "scale": 1.0,    "unit": "",    "prec": 0, "name": "Inverter State"},
 
@@ -1034,6 +1038,13 @@ LOG_TABLE_EVERY_N = 4
 SOC_SAFETY_PV_WAIT_H = 12
 # BMS-Pflege: nach Faelligkeit noch max. so viele Stunden auf PV warten.
 BMS_CARE_PV_WAIT_H = 48
+# FIX 50: BMS-Pflege vorziehen, wenn die Zellspannungen weit auseinanderliegen (nur bei Modbus-Anbindung,
+# die WLAN-API liefert keine Zellspannungen). Unterschied hoechste - niedrigste Zelle in mV, 0 = aus.
+# Vorgezogen wird nur mit PV-Ueberschuss (nie aus dem Netz) und fruehestens BMS_CARE_CELL_MIN_DAYS nach der
+# letzten Vollladung; der Unterschied muss BMS_CARE_CELL_DELTA_MIN_S Sekunden am Stueck anliegen.
+BMS_CARE_CELL_DELTA_MV = 100
+BMS_CARE_CELL_DELTA_MIN_S = 1800
+BMS_CARE_CELL_MIN_DAYS = 3
 
 # Hauptschalter / Batterie-Schalter (FIX 29, auch im Dashboard schaltbar).
 # False = das Script steuert nicht: Batterie bekommt einmal STOP und wird danach

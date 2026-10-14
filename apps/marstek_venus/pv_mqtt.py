@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.17",
+    "sw_version": "2.0.18",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -104,6 +104,8 @@ BASE_PARAMS = [
     ("SOC_SAFETY_PV_WAIT_H",      "number", "Notladung: max. Warten auf Sonne", 0, 48, 1, "h",        "mdi:timer-sand",     None),
     ("BMS_CARE_REQUIRE_PV",       "switch", "BMS-Pflege: Sonne bevorzugen", None, None, None, None,   "mdi:solar-power",    None),
     ("BMS_CARE_PV_WAIT_H",        "number", "BMS-Pflege: max. Warten auf Sonne", 0, 168, 1, "h",      "mdi:timer-sand",     None),
+    ("BMS_CARE_CELL_DELTA_MV",    "number", "BMS-Pflege vorziehen ab Zell-Unterschied", 0, 500, 5, "mV", "mdi:battery-heart-variant", None),  # FIX 50
+    ("BMS_CARE_CELL_MIN_DAYS",    "number", "BMS-Pflege vorziehen fruehestens nach", 1, 30, 1, "d",  "mdi:calendar-clock",       None),  # FIX 50
     # ---- Erweitert: PV-Laden / Regelverhalten ----------------------------
     ("PV_CHARGE_ALLOW_W",         "number", "Laden ab Einspeisung",        -1000, 0,    10,  "W",     "mdi:transmission-tower-export", None),
     ("PV_SURPLUS_MIN_TIME",       "number", "PV-Ueberschuss Mindestdauer", 0,     300,  5,   "s",     "mdi:timer-outline",  None),

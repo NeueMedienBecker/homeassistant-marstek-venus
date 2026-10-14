@@ -65,6 +65,7 @@ Aenderungen:
 - FIX 47: 'STOP wenn Zaehlerwert aelter als' (METER_MAX_AGE_S) ist im Dashboard einstellbar; sensor.marstek_meter_info zeigt Alter des Zaehlerwerts, typischen Abstand neuer Werte, STOPs der letzten 24 h und einen Vorschlag fuer die Wartezeit.
 - FIX 48: Grenzwerte je Batterie (max. Lade-/Entladeleistung, Min-/Max-SoC, Kapazitaet) im Dashboard aenderbar (BATTERYn_MAX_CHARGE_W, _MAX_DISCHARGE_W, _MIN_SOC, _MAX_SOC, _CAPACITY_KWH); ohne Treiber-Neuaufbau.
 - FIX 49: Gesamt-Energiezaehler (kWh) werden nur plausibel an Home Assistant gegeben: kein Ruecksprung, kein Sprung groesser als physikalisch moeglich (z. B. vertauschte Modbus-Antworten). Ein abweichender Wert wird erst uebernommen, wenn er mind. 10 min stabil bleibt. Sonst zaehlte HA Hunderte kWh 'heute'.
+- FIX 50: hoechste/niedrigste Zellspannung (Modbus 37007/37008) und Unterschied in mV je Batterie (sensor.marstekvenus_N_cell_voltage_delta, nur Modbus); liegt der Unterschied >= BMS_CARE_CELL_DELTA_MV laenger an, wird die BMS-Pflege vorgezogen (nur mit PV-Ueberschuss, fruehestens nach BMS_CARE_CELL_MIN_DAYS).
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -85,7 +86,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.17"  # FIX 39
+PV_CONTROL_VERSION = "2.0.18"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -110,6 +111,16 @@ if "GRID_SENSOR_INVERT" not in globals():
 for _k46 in ("EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR", "EXT_PV_SENSOR"):
     if _k46 not in globals():
         globals()[_k46] = ""
+
+# FIX 50: Zellspannungen (nur Modbus) - Standardwerte und Register, falls eine alte pv_config.py sie nicht kennt
+for _k50, _v50 in (("BMS_CARE_CELL_DELTA_MV", 100), ("BMS_CARE_CELL_DELTA_MIN_S", 1800), ("BMS_CARE_CELL_MIN_DAYS", 3)):
+    if _k50 not in globals():
+        globals()[_k50] = _v50
+try:
+    HA_REGMAP.setdefault("cell_voltage_max", {"enabled": True, "addr": 37007, "cnt": 1, "type": "u16", "scale": 0.001, "unit": "V", "prec": 3, "name": "Cell Voltage Max"})
+    HA_REGMAP.setdefault("cell_voltage_min", {"enabled": True, "addr": 37008, "cnt": 1, "type": "u16", "scale": 0.001, "unit": "V", "prec": 3, "name": "Cell Voltage Min"})
+except NameError:
+    pass
 
 # Rueckwaertskompatibilitaet: neue Spalten auch bei alter config sicherstellen.
 # Dieser Block ist idempotent – bei aktueller Config passiert nichts.
@@ -1156,6 +1167,65 @@ class PVControlApp(Hass):
         return (f"sensor.{HA_EXPORT_PREFIX}_{idx}_{key}" if idx
                 else f"sensor.{HA_EXPORT_PREFIX}_{battery_name}_{key}")
 
+    def _cell_store(self, name, key, val):
+        """FIX 50: Zellspannung merken und Unterschied auswerten (nur plausible Werte 2,0-4,5 V)."""
+        try:
+            v = float(val)
+        except (TypeError, ValueError):
+            return
+        if not 2.0 <= v <= 4.5:
+            return
+        now = time.time()
+        c = self.__dict__.setdefault('_cell_v', {}).setdefault(name, {})
+        c['max' if key.endswith('_max') else 'min'] = (v, now)
+        if 'max' not in c or 'min' not in c or abs(c['max'][1] - c['min'][1]) > 600:
+            return
+        d = int(round((c['max'][0] - c['min'][0]) * 1000))
+        if d < 0:
+            return
+        c['delta'] = (d, now)
+        lim = int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0)
+        if lim > 0 and d >= lim:
+            c.setdefault('high_since', now)
+        elif lim <= 0 or d < lim * 0.8:
+            c.pop('high_since', None)
+
+    def _cell_early(self, name):
+        """FIX 50: True, wenn der Zell-Unterschied lange genug ueber der Grenze liegt (frische Modbus-Werte)."""
+        c = (getattr(self, '_cell_v', {}) or {}).get(name) or {}
+        hs, dl = c.get('high_since'), c.get('delta')
+        if not hs or not dl or time.time() - dl[1] > 900 or int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0) <= 0:
+            return False
+        return time.time() - hs >= float(globals().get('BMS_CARE_CELL_DELTA_MIN_S', 1800))
+
+    def _cell_publish(self, name):
+        """FIX 50: sensor.<prefix>_N_cell_voltage_delta fuers Dashboard (nur Anzeige)."""
+        try:
+            c = (getattr(self, '_cell_v', {}) or {}).get(name) or {}
+            dl = c.get('delta')
+            lim = int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0)
+            fresh = bool(dl) and time.time() - dl[1] <= 900
+            if fresh:
+                state = dl[0]
+                if self._cell_early(name):
+                    status = 'hoch - BMS-Pflege wird vorgezogen (sobald PV-Ueberschuss da ist)'
+                elif c.get('high_since'):
+                    status = f"hoch seit {int((time.time() - c['high_since']) // 60)} min"
+                else:
+                    status = 'OK' if lim > 0 else 'OK (Vorziehen aus)'
+            else:
+                state = 'unknown'
+                status = ('nur mit Modbus-Anbindung verfuegbar' if isinstance(self._drivers.get(name), ApiDriver)
+                          else 'noch keine Werte')
+            idx = BATTERY_META.get(name, {}).get('idx', name)
+            self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, attributes={
+                'friendly_name': f'MarstekVenus {idx} Cell Voltage Delta', 'unit_of_measurement': 'mV',
+                'icon': 'mdi:battery-heart-variant', 'status': status, 'limit_mv': lim,
+                'max_v': (c.get('max') or (None,))[0] if fresh else None,
+                'min_v': (c.get('min') or (None,))[0] if fresh else None})
+        except Exception as e:
+            self.log(f'ZELLSPANNUNG {name}: {e}')
+
     def _kwh_guard(self, eid, v):
         """FIX 49: Rueckgabe des Werts, der an HA gehen darf, oder None (verwerfen)."""
         now = time.time()
@@ -1319,6 +1389,8 @@ class PVControlApp(Hass):
             return
         try:
             keys = [k for k, v in HA_REGMAP.items() if v.get("enabled", True)]
+            _cu = getattr(self, '_cell_unsupported', {}).get(battery_name, 0)  # FIX 50
+            keys = [k for k in keys if not (k.startswith('cell_voltage_') and time.time() < _cu)]
             prio = ["battery_soc", "total_charging_energy", "total_discharging_energy"]
             keys = [k for k in prio if k in keys] + [k for k in keys if k not in prio]
 
@@ -1336,6 +1408,10 @@ class PVControlApp(Hass):
                 raw = self._read_reg_value(client, cfg["unit"], spec, battery_name)
                 if _shared and (time.time() - _t_rd) >= 0.8 * float(MB_TIMEOUT_S):
                     _sdrv._bad = True  # FIX 28
+                if raw is None and key.startswith('cell_voltage_'):  # FIX 50: Register evtl. nicht vorhanden
+                    self.__dict__.setdefault('_cell_unsupported', {})[battery_name] = time.time() + 6 * 3600
+                    self.log(f'[{battery_name}] Zellspannung (Register {spec.get("addr")}) nicht lesbar - 6 h pausiert', level='WARNING')
+                    continue
                 if raw is None:
                     self._mb_backoff_until[battery_name] = time.time() + MODBUS_REG_ERROR_BACKOFF_S
                     if _shared:
@@ -1356,6 +1432,8 @@ class PVControlApp(Hass):
                     "type": str(spec.get("type")),
                 })
                 self._export_computed_sensors(battery_name, key, val)
+                if key.startswith('cell_voltage_'):  # FIX 50
+                    self._cell_store(battery_name, key, val)
         finally:
             try:
                 if _shared:
@@ -2324,7 +2402,13 @@ class PVControlApp(Hass):
                 self._save_bms_state()
                 self.log(f'BMS {name}: kein Vollladedatum bekannt -> faellig, wartet auf PV-Ueberschuss')
             if last > 0 and (now_ts - last) < (FULL_CHARGE_INTERVAL_DAYS * 86400):
-                continue
+                # FIX 50: vorziehen bei grossem Zell-Unterschied - nur Modbus, nur mit PV-Ueberschuss, Mindestabstand
+                if not (self._cell_early(name) and bool(getattr(self, 'pv_surplus', False))
+                        and (now_ts - last) >= float(globals().get('BMS_CARE_CELL_MIN_DAYS', 3)) * 86400):
+                    continue
+                self.log(f"BMS {name}: Zellspannungen {((getattr(self, '_cell_v', {}) or {}).get(name) or {}).get('delta', ('?',))[0]} mV "
+                         f"auseinander -> BMS-Pflege vorgezogen (nur mit PV-Ueberschuss)")
+                return name
             if not _bms_pv_ok:
                 _bms_wait = float(globals().get("BMS_CARE_PV_WAIT_H", 48)) * 3600
                 if last > 0 and (now_ts - last) < (FULL_CHARGE_INTERVAL_DAYS * 86400 + _bms_wait):
@@ -2998,6 +3082,10 @@ class PVControlApp(Hass):
                         })
                     except Exception as e:
                         self.error(f"BMS-HA-SENSOR {n}: set_state fehlgeschlagen: {e}")
+
+            # FIX 50: Zellspannungs-Unterschied je Batterie (nur Modbus)
+            for n in self.batteries.keys():
+                self._cell_publish(n)
 
             # 5) Mode-Wechsel
             now        = time.monotonic()
