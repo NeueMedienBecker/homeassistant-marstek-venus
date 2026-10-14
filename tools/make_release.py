@@ -634,7 +634,7 @@ def fix49_control(src):
         b + "        last[eid] = (cur, now)",
         b + "    lv, lt = last[eid]",
         b + "    max_up = 0.05 + max(15.0, now - lt) * 12.0 / 3600.0  # hoechstens 12 kW seit dem letzten guten Wert",
-        b + "    if lv - 0.05 <= v <= lv + max_up:",
+        b + "    if lv - 0.2 <= v <= lv + max_up:  # API rundet auf 0,1 kWh, Modbus auf 0,01 kWh",
         b + "        pend.pop(eid, None)",
         b + "        v = max(v, lv)",
         b + "        last[eid] = (v, now)",

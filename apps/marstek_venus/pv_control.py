@@ -86,7 +86,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.19"  # FIX 39
+PV_CONTROL_VERSION = "2.0.20"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1244,7 +1244,7 @@ class PVControlApp(Hass):
             last[eid] = (cur, now)
         lv, lt = last[eid]
         max_up = 0.05 + max(15.0, now - lt) * 12.0 / 3600.0  # hoechstens 12 kW seit dem letzten guten Wert
-        if lv - 0.05 <= v <= lv + max_up:
+        if lv - 0.2 <= v <= lv + max_up:  # API rundet auf 0,1 kWh, Modbus auf 0,01 kWh
             pend.pop(eid, None)
             v = max(v, lv)
             last[eid] = (v, now)

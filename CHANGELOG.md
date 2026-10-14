@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.20 (2026-10-14)
+
+### Behoben
+- Energiezaehler-Schutz (2.0.17) meldete 'unplausibel', wenn eine Batterie zwischen WLAN-API (0,1 kWh genau) und Modbus (0,01 kWh genau) wechselte. Kleine Ruecklaeufe bis 0,2 kWh werden jetzt still ignoriert (der Zaehler bleibt auf dem hoeheren Wert).
+
 ## 2.0.19 (2026-10-14)
 
 ### Behoben
