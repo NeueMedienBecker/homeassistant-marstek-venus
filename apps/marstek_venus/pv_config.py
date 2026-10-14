@@ -750,7 +750,11 @@ PV_CHARGE_ALLOW_W = -100
 
 # SoC-Grenzwert fuer "voll geladen" in Prozent.
 # Wird dieser Wert erreicht, gilt die Batterie als voll und der Halte-Timer startet.
-FULL_CHARGE_SOC = 99
+FULL_CHARGE_SOC = 100
+# FIX 53: Zeigt eine Batterie trotz Ladebefehl nie 100 %, gilt sie als voll, sobald sie mindestens 99 % zeigt
+# und BMS_FULL_STALL_S Sekunden lang weniger als BMS_FULL_STALL_W Watt aufnimmt (kein Haengenbleiben).
+BMS_FULL_STALL_S = 1800
+BMS_FULL_STALL_W = 60
 
 # Mindest-Abstand zwischen zwei BMS-Volllade-Zyklen in Tagen.
 # 10 Tage = ca. 3-4 Vollladevorgaenge pro Monat.

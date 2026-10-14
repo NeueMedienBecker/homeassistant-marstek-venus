@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.22 (2026-10-14)
+
+### Neu
+- **Update-Hinweis**: Die Steuerung prueft alle 6 Stunden GitHub. Gibt es eine neue Version, zeigt die Uebersicht einen Hinweis mit allen Neuerungen seit der installierten Version und dem Befehl zum Einspielen; Home Assistant zeigt das Update auch unter Einstellungen -> Updates. Abschalten: UPDATE_CHECK = False in pv_config.py.
+- **Vollladung bis 100 %** (vorher 99 %): bei 100 % gleicht das BMS am gruendlichsten aus. Zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie mind. 99 % zeigt und 30 min trotz Ladebefehl keine Leistung mehr aufnimmt - die BMS-Pflege bleibt nicht haengen.
+
 ## 2.0.21 (2026-10-14)
 
 ### Behoben

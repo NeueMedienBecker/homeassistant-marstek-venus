@@ -182,6 +182,8 @@ stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, 
 
 **Zellspannungen (nur Modbus):** Bei Anbindung per Modbus zeigt der Tab *Batterien* je Venus die höchste und niedrigste Zellspannung und den Unterschied in mV. Liegt der Unterschied länger über der Grenze (Standard 100 mV), wird die BMS-Pflege vorgezogen – nur mit PV-Überschuss. Die WLAN-API liefert keine Zellspannungen.
 
+**Updates:** Die Steuerung prüft alle 6 Stunden, ob es auf GitHub eine neue Version gibt. Dann erscheint in der *Übersicht* ein Hinweis mit allen Neuerungen (zusätzlich unter *Einstellungen → Updates*). Eingespielt wird mit dem Installationsbefehl – alle Einstellungen bleiben erhalten.
+
 **Ohne Installer** (für Erfahrene): AppDaemon-Add-on mit den Python-Paketen *pymodbus==3.9.2* und *paho-mqtt*,
 den Ordner *apps/marstek_venus* in den AppDaemon-apps-Ordner kopieren, in *apps.yaml* eintragen:
 

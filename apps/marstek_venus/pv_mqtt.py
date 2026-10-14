@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.21",
+    "sw_version": "2.0.22",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -142,6 +142,9 @@ BUTTONS = [
 ]
 RESET_KEY = "reset_overrides"
 CONFIRM_S = 15
+# FIX 52: Software-Update von GitHub (nur Hinweis, Einspielen per Installationsbefehl)
+UPDATE_REPO = "NeueMedienBecker/homeassistant-marstek-venus"
+UPDATE_CHECK_H = 6
 
 
 def _to_bool(v):
@@ -440,6 +443,7 @@ class ParamBridge:
             self.log(f"Start fehlgeschlagen: {e}")
 
     def stop(self):
+        self._upd_run = False  # FIX 52
         c = self.client
         self.client = None
         if not c:
@@ -470,6 +474,11 @@ class ParamBridge:
             self._publish_overrides()
             self._publish_form()
             client.publish(f"{BASE}/admin_status/state", self.status, qos=1, retain=True)
+            self._publish_update_state()  # FIX 52
+            if not getattr(self, '_upd_thread', None):
+                self._upd_run = True
+                self._upd_thread = threading.Thread(target=self._update_loop, daemon=True)
+                self._upd_thread.start()
             # leere Formularfelder nochmal senden, wenn HA die Entitaeten angelegt hat
             t = threading.Timer(5.0, self._publish_form)
             t.daemon = True
@@ -609,6 +618,12 @@ class ParamBridge:
                 "icon": icon,
                 "entity_category": cat,
             }), qos=1, retain=True)
+        # FIX 52: Software-Update (HA zeigt es auch unter Einstellungen -> Updates)
+        client.publish(f"{DISCOVERY}/update/{BASE}/software/config", json.dumps({
+            "name": "Software", "unique_id": "marstek_ctrl_software", "default_entity_id": "update.marstek_software",
+            "state_topic": f"{BASE}/software/state", "availability": avail, "device": DEVICE,
+            "entity_picture": "https://brands.home-assistant.io/_/hassio/icon.png",
+        }), qos=1, retain=True)
 
         # Formular "Neue Batterie" + Loesch-Auswahl
         for key, typ, name, lo, hi, step, unit, icon, dflt in FORM_FIELDS:
@@ -922,6 +937,86 @@ class ParamBridge:
         self._restart_script()
 
     # ------------------------------------------------------ im App-Thread
+    # ------------------------------------------------ FIX 52: Software-Update
+    def _ver_tuple(self, v):
+        return tuple(int(x) for x in re.findall(r"\d+", str(v or "0"))[:4])
+
+    def _cur_version(self):
+        return str(self.g.get("PV_CONTROL_VERSION") or DEVICE.get("sw_version") or "0")
+
+    def _publish_update_state(self):
+        c = self.client
+        if not c or not self.connected:
+            return
+        u = getattr(self, "_upd", None) or {}
+        cur = self._cur_version()
+        st = {"installed_version": cur, "latest_version": u.get("latest") or cur,
+              "title": "Marstek Venus Steuerung",
+              "release_url": u.get("url") or f"https://github.com/{UPDATE_REPO}/releases",
+              "release_summary": (u.get("summary") or "")[:250], "in_progress": bool(u.get("busy"))}
+        c.publish(f"{BASE}/software/state", json.dumps(st), qos=1, retain=True)
+
+    def _update_loop(self):
+        time.sleep(45)
+        while getattr(self, "_upd_run", False):
+            if self.g.get("UPDATE_CHECK", True):
+                self._update_check()
+            for _ in range(int(float(UPDATE_CHECK_H) * 120)):
+                if not getattr(self, "_upd_run", False):
+                    return
+                time.sleep(30)
+
+    def _update_check(self):
+        import urllib.request
+        try:
+            r = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                                       headers={"User-Agent": "marstek-venus-steuerung",
+                                                "Accept": "application/vnd.github+json"})
+            d = json.loads(urllib.request.urlopen(r, timeout=20).read().decode("utf-8"))
+            tag = str(d.get("tag_name") or "").lstrip("vV").strip()
+            if not tag:
+                return
+            cur = self._cur_version()
+            notes = self._update_notes(tag, cur)
+            body = re.sub(r"[#*`>]", "", notes or str(d.get("body") or "")).strip()
+            u = dict(getattr(self, "_upd", None) or {})
+            u.update(latest=tag, url=d.get("html_url"), summary=body[:250], checked=time.time())
+            self._upd = u
+            try:
+                self.app.set_state("sensor.marstek_update_notes", state=str(tag), attributes={
+                    "friendly_name": "Marstek Update: Was ist neu", "icon": "mdi:text-box-outline",
+                    "installed": cur, "latest": tag, "url": d.get("html_url") or "",
+                    "notes": notes or "Keine Beschreibung gefunden - siehe Link."})
+            except Exception as e:
+                self.log(f"UPDATE: Hinweis nicht gesetzt ({e})")
+            if self._ver_tuple(tag) > self._ver_tuple(cur) and getattr(self, "_upd_logged", None) != tag:
+                self._upd_logged = tag
+                self.log(f"UPDATE: neue Version {tag} verfuegbar (installiert {cur})")
+            self._publish_update_state()
+        except Exception as e:
+            self.log(f"UPDATE: Pruefung fehlgeschlagen ({e})")
+
+    def _update_notes(self, tag, cur):
+        # Abschnitte aus CHANGELOG.md der neuen Version, die neuer sind als die installierte (max. ca. 3000 Zeichen)
+        import urllib.request
+        try:
+            r = urllib.request.Request(f"https://raw.githubusercontent.com/{UPDATE_REPO}/v{tag}/CHANGELOG.md",
+                                       headers={"User-Agent": "marstek-venus-steuerung"})
+            text = urllib.request.urlopen(r, timeout=20).read().decode("utf-8")
+        except Exception:
+            return ""
+        out = []
+        for part in re.split(r"(?m)^## ", text)[1:]:
+            head = part.split("\n", 1)[0].strip()
+            m = re.match(r"([0-9][0-9.]*)", head)
+            if not m or self._ver_tuple(m.group(1)) <= self._ver_tuple(cur):
+                continue
+            rest = part.split("\n", 1)[1] if "\n" in part else ""
+            rest = re.sub(r"(?m)^### ", "", rest).strip()
+            out.append(f"**Version {head}**\n{rest}")
+        txt = "\n\n".join(out)
+        return txt[:3000] + (" ..." if len(txt) > 3000 else "")
+
     def apply_pending(self):
         """Zu Beginn jedes Regelzyklus aufrufen - setzt geaenderte Werte und fuehrt Aktionen aus."""
         with self.lock:

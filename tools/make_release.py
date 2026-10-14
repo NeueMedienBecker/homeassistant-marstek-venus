@@ -1012,6 +1012,258 @@ def fix51_dashboard(cfg):
     return cfg
 
 
+UPD_METHODS = r"""
+    # ------------------------------------------------ FIX 52: Software-Update
+    def _ver_tuple(self, v):
+        return tuple(int(x) for x in re.findall(r"\d+", str(v or "0"))[:4])
+
+    def _cur_version(self):
+        return str(self.g.get("PV_CONTROL_VERSION") or DEVICE.get("sw_version") or "0")
+
+    def _publish_update_state(self):
+        c = self.client
+        if not c or not self.connected:
+            return
+        u = getattr(self, "_upd", None) or {}
+        cur = self._cur_version()
+        st = {"installed_version": cur, "latest_version": u.get("latest") or cur,
+              "title": "Marstek Venus Steuerung",
+              "release_url": u.get("url") or f"https://github.com/{UPDATE_REPO}/releases",
+              "release_summary": (u.get("summary") or "")[:250], "in_progress": bool(u.get("busy"))}
+        c.publish(f"{BASE}/software/state", json.dumps(st), qos=1, retain=True)
+
+    def _update_loop(self):
+        time.sleep(45)
+        while getattr(self, "_upd_run", False):
+            if self.g.get("UPDATE_CHECK", True):
+                self._update_check()
+            for _ in range(int(float(UPDATE_CHECK_H) * 120)):
+                if not getattr(self, "_upd_run", False):
+                    return
+                time.sleep(30)
+
+    def _update_check(self):
+        import urllib.request
+        try:
+            r = urllib.request.Request(f"https://api.github.com/repos/{UPDATE_REPO}/releases/latest",
+                                       headers={"User-Agent": "marstek-venus-steuerung",
+                                                "Accept": "application/vnd.github+json"})
+            d = json.loads(urllib.request.urlopen(r, timeout=20).read().decode("utf-8"))
+            tag = str(d.get("tag_name") or "").lstrip("vV").strip()
+            if not tag:
+                return
+            cur = self._cur_version()
+            notes = self._update_notes(tag, cur)
+            body = re.sub(r"[#*`>]", "", notes or str(d.get("body") or "")).strip()
+            u = dict(getattr(self, "_upd", None) or {})
+            u.update(latest=tag, url=d.get("html_url"), summary=body[:250], checked=time.time())
+            self._upd = u
+            try:
+                self.app.set_state("sensor.marstek_update_notes", state=str(tag), attributes={
+                    "friendly_name": "Marstek Update: Was ist neu", "icon": "mdi:text-box-outline",
+                    "installed": cur, "latest": tag, "url": d.get("html_url") or "",
+                    "notes": notes or "Keine Beschreibung gefunden - siehe Link."})
+            except Exception as e:
+                self.log(f"UPDATE: Hinweis nicht gesetzt ({e})")
+            if self._ver_tuple(tag) > self._ver_tuple(cur) and getattr(self, "_upd_logged", None) != tag:
+                self._upd_logged = tag
+                self.log(f"UPDATE: neue Version {tag} verfuegbar (installiert {cur})")
+            self._publish_update_state()
+        except Exception as e:
+            self.log(f"UPDATE: Pruefung fehlgeschlagen ({e})")
+
+    def _update_notes(self, tag, cur):
+        # Abschnitte aus CHANGELOG.md der neuen Version, die neuer sind als die installierte (max. ca. 3000 Zeichen)
+        import urllib.request
+        try:
+            r = urllib.request.Request(f"https://raw.githubusercontent.com/{UPDATE_REPO}/v{tag}/CHANGELOG.md",
+                                       headers={"User-Agent": "marstek-venus-steuerung"})
+            text = urllib.request.urlopen(r, timeout=20).read().decode("utf-8")
+        except Exception:
+            return ""
+        out = []
+        for part in re.split(r"(?m)^## ", text)[1:]:
+            head = part.split("\n", 1)[0].strip()
+            m = re.match(r"([0-9][0-9.]*)", head)
+            if not m or self._ver_tuple(m.group(1)) <= self._ver_tuple(cur):
+                continue
+            rest = part.split("\n", 1)[1] if "\n" in part else ""
+            rest = re.sub(r"(?m)^### ", "", rest).strip()
+            out.append(f"**Version {head}**\n{rest}")
+        txt = "\n\n".join(out)
+        return txt[:3000] + (" ..." if len(txt) > 3000 else "")
+
+"""
+
+UPD_HELP_MD = """<details><summary>ℹ️ <b>Software-Update: Wie geht das?</b></summary>
+
+Die Steuerung schaut alle 6 Stunden auf GitHub nach, ob es eine neue Version gibt. Ist eine da, erscheint oben in der **Übersicht** ein Hinweis mit allen Neuerungen seit deiner Version, und Home Assistant zeigt sie zusätzlich unter **Einstellungen → Updates**.
+
+**Einspielen:** im Terminal von Home Assistant den Installationsbefehl ausführen (steht im Hinweis). Alle Einstellungen, Batterien und Dashboard-Werte bleiben erhalten, vorher werden Sicherungen angelegt.
+
+Abschalten der Prüfung: in `pv_config.py` die Zeile `UPDATE_CHECK = False` ergänzen.
+</details>"""
+
+
+def fix52_mqtt(src):
+    """FIX 52: Update-Entitaet (MQTT update, nur Anzeige), GitHub-Pruefung alle 6 h, Neuerungen."""
+    if "FIX 52" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, 'CONFIRM_S = 15')
+    L[i + 1:i + 1] = [
+        "# FIX 52: Software-Update von GitHub (nur Hinweis, Einspielen per Installationsbefehl)",
+        'UPDATE_REPO = "NeueMedienBecker/homeassistant-marstek-venus"',
+        "UPDATE_CHECK_H = 6",
+    ]
+    # Discovery: Update-Entitaet nach den Buttons
+    i = find(L, "for key, name, icon, cat in BUTTONS:")
+    j = i
+    while "}), qos=1, retain=True)" not in L[j]:
+        j += 1
+    b = ind(L[i])
+    L[j + 1:j + 1] = [
+        b + "# FIX 52: Software-Update (HA zeigt es auch unter Einstellungen -> Updates)",
+        b + 'client.publish(f"{DISCOVERY}/update/{BASE}/software/config", json.dumps({',
+        b + '    "name": "Software", "unique_id": "marstek_ctrl_software", "default_entity_id": "update.marstek_software",',
+        b + '    "state_topic": f"{BASE}/software/state", "availability": avail, "device": DEVICE,',
+        b + '    "entity_picture": "https://brands.home-assistant.io/_/hassio/icon.png",',
+        b + '}), qos=1, retain=True)',
+    ]
+    # nach dem Verbinden: Zustand senden, Pruef-Thread einmal starten
+    i = find(L, 'client.publish(f"{BASE}/admin_status/state", self.status, qos=1, retain=True)')
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "self._publish_update_state()  # FIX 52",
+        b + "if not getattr(self, '_upd_thread', None):",
+        b + "    self._upd_run = True",
+        b + "    self._upd_thread = threading.Thread(target=self._update_loop, daemon=True)",
+        b + "    self._upd_thread.start()",
+    ]
+    # Stop: Thread beenden
+    i = find(L, "def stop(self):")
+    L.insert(i + 1, ind(L[i]) + "    self._upd_run = False  # FIX 52")
+    # Methoden vor apply_pending
+    i = find(L, "def apply_pending(self):")
+    L[i:i] = UPD_METHODS.strip("\n").split("\n") + [""]
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix52_dashboard(cfg):
+    """FIX 52: Uebersicht: Hinweis mit Neuerungen, wenn ein Update da ist; Verwaltung: Zeile + Hilfe."""
+    if "update.marstek_software" in json.dumps(cfg):
+        return cfg
+    banner = {"type": "conditional",
+              "conditions": [{"condition": "state", "entity": "update.marstek_software", "state": "on"}],
+              "card": {"type": "vertical-stack", "cards": [
+                  {"type": "markdown", "content": (
+                      "### 🔔 Update verfügbar\n"
+                      "Version **{{ state_attr('update.marstek_software','latest_version') }}** ist da "
+                      "(installiert: {{ state_attr('update.marstek_software','installed_version') }}). "
+                      "[Release auf GitHub]({{ state_attr('update.marstek_software','release_url') }})\n\n"
+                      "{{ state_attr('sensor.marstek_update_notes','notes') or '' }}\n\n"
+                      "**Einspielen:** im Terminal von Home Assistant denselben Befehl wie bei der Installation "
+                      "ausführen – alle Einstellungen bleiben erhalten, vorher werden Sicherungen angelegt:\n\n"
+                      "`curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash`")},
+              ]}}
+    hits = 0
+    for v in cfg.get("views", []):
+        secs = v.get("sections") or []
+        if v.get("path") == "uebersicht" and secs:
+            cards = secs[0].setdefault("cards", [])
+            pos = 1 if cards and cards[0].get("type") == "heading" else 0
+            cards.insert(pos, banner)
+            hits += 1
+        if v.get("path") == "konfiguration" and len(secs) > 1:
+            cards = secs[1].get("cards", [])
+            for c in cards:
+                if c.get("type") == "entities":
+                    c.setdefault("entities", []).append({"entity": "update.marstek_software", "name": "Software-Update"})
+                    hits += 1
+                    break
+            cards.append({"type": "markdown", "content": UPD_HELP_MD})
+    assert hits == 2, hits
+    return cfg
+
+
+FULL100_BULLET = ("- **Vollladung bis** (Standard 100 %): ab diesem Ladestand gilt die Batterie als voll. Bei 100 % gleicht "
+                  "das BMS am gründlichsten aus. Manche Akkus zeigen 100 % aber erst sehr spät oder gar nicht an – damit die "
+                  "Pflege dann nicht „hängen bleibt“, gilt die Batterie auch als voll, wenn sie **mindestens 99 %** zeigt und "
+                  "**30 min lang trotz Ladebefehl keine Leistung mehr aufnimmt**.")
+
+
+def fix53_config(src):
+    if "FIX 53" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "FULL_CHARGE_SOC = 99")
+    L[i] = "FULL_CHARGE_SOC = 100"
+    L[i + 1:i + 1] = [
+        "# FIX 53: Zeigt eine Batterie trotz Ladebefehl nie 100 %, gilt sie als voll, sobald sie mindestens 99 % zeigt",
+        "# und BMS_FULL_STALL_S Sekunden lang weniger als BMS_FULL_STALL_W Watt aufnimmt (kein Haengenbleiben).",
+        "BMS_FULL_STALL_S = 1800",
+        "BMS_FULL_STALL_W = 60",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_config.py", "exec")
+    return out
+
+
+def fix53_control(src):
+    """FIX 53: BMS-Pflege: 'voll', wenn >= 99 % und trotz Ladebefehl lange keine Leistung mehr (100 % nie angezeigt)."""
+    if "FIX 53" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 52:", startswith=True) if any(x.strip().startswith("- FIX 52:") for x in L) else find(L, "- FIX 50:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 53: Vollladung bis 100 % (Standard); zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie >= 99 % "
+                                "zeigt und BMS_FULL_STALL_S lang trotz Ladebefehl < BMS_FULL_STALL_W aufnimmt.")
+    i = find(L, "# FIX 18: Haltephase laeuft bis holding_until, auch wenn der SoC kurz auf 98 % faellt")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "# FIX 53: 100 % nie angezeigt? -> voll, wenn >= 99 % und die Batterie trotz Ladebefehl nichts mehr aufnimmt",
+        b + "_st53 = states.get(name, {}) or {}",
+        b + "if bms.get('phase') == 'charging' and min(int(FULL_CHARGE_SOC), 99) <= soc < int(FULL_CHARGE_SOC):",
+        b + "    _cmd53 = (getattr(self, '_bms_last_cmd', None) or {}).get(name)",
+        b + "    try:",
+        b + "        _pw53 = max(abs(float(_st53.get('ac') or 0)), abs(float(_st53.get('bp') or 0)))",
+        b + "    except (TypeError, ValueError):",
+        b + "        _pw53 = 9999.0",
+        b + "    if _cmd53 and str(_cmd53[0]).startswith('charge') and _pw53 < float(globals().get('BMS_FULL_STALL_W', 60)):",
+        b + "        bms.setdefault('stall_since', now_ts)",
+        b + "        if now_ts - float(bms['stall_since']) >= float(globals().get('BMS_FULL_STALL_S', 1800)):",
+        b + "            write_logs.append(f\"{name}: BMS {soc}% und seit {int((now_ts - float(bms['stall_since'])) // 60)} min \"",
+        b + "                              f\"keine Ladeleistung mehr -> gilt als voll\")",
+        b + "            soc = int(FULL_CHARGE_SOC)",
+        b + "    else:",
+        b + "        bms.pop('stall_since', None)",
+        b + "else:",
+        b + "    bms.pop('stall_since', None)",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix53_dashboard(cfg):
+    """FIX 53: Hilfetext 'Vollladung bis' auf 100 % mit Absicherung."""
+    def walk(o):
+        if isinstance(o, dict):
+            c = o.get("content")
+            if isinstance(c, str) and "- **Vollladung bis** (Standard 99 %)" in c:
+                a = c.index("- **Vollladung bis** (Standard 99 %)")
+                e = c.index("\n", a)
+                o["content"] = c[:a] + FULL100_BULLET + c[e:]
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+    walk(cfg)
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1274,12 +1526,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))), ("pv_mqtt.py", lambda t: fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))),
-                  ("pv_config.py", lambda t: fix50_config(fix40_config(t)))):
+    for fn, f in (("pv_control.py", lambda t: fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))), ("pv_mqtt.py", lambda t: fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))),
+                  ("pv_config.py", lambda t: fix53_config(fix50_config(fix40_config(t))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -1293,12 +1545,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))
-    wr(os.path.join(dst, "pv_config.py"), fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))
+       fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))))
+    wr(os.path.join(dst, "pv_config.py"), fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))
+    cfg = fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

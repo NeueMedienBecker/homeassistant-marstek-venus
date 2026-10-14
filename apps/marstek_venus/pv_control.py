@@ -66,6 +66,7 @@ Aenderungen:
 - FIX 48: Grenzwerte je Batterie (max. Lade-/Entladeleistung, Min-/Max-SoC, Kapazitaet) im Dashboard aenderbar (BATTERYn_MAX_CHARGE_W, _MAX_DISCHARGE_W, _MIN_SOC, _MAX_SOC, _CAPACITY_KWH); ohne Treiber-Neuaufbau.
 - FIX 49: Gesamt-Energiezaehler (kWh) werden nur plausibel an Home Assistant gegeben: kein Ruecksprung, kein Sprung groesser als physikalisch moeglich (z. B. vertauschte Modbus-Antworten). Ein abweichender Wert wird erst uebernommen, wenn er mind. 10 min stabil bleibt. Sonst zaehlte HA Hunderte kWh 'heute'.
 - FIX 50: hoechste/niedrigste Zellspannung (Modbus 37007/37008) und Unterschied in mV je Batterie (sensor.marstekvenus_N_cell_voltage_delta, nur Modbus); liegt der Unterschied >= BMS_CARE_CELL_DELTA_MV laenger an, wird die BMS-Pflege vorgezogen (nur mit PV-Ueberschuss, fruehestens nach BMS_CARE_CELL_MIN_DAYS).
+- FIX 53: Vollladung bis 100 % (Standard); zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie >= 99 % zeigt und BMS_FULL_STALL_S lang trotz Ladebefehl < BMS_FULL_STALL_W aufnimmt.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -86,7 +87,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.21"  # FIX 39
+PV_CONTROL_VERSION = "2.0.22"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -2442,6 +2443,24 @@ class PVControlApp(Hass):
         bms    = self.bms_state[name]
         soc    = int(states.get(name, {}).get("soc", 0))
         driver = self._drivers.get(name)
+        # FIX 53: 100 % nie angezeigt? -> voll, wenn >= 99 % und die Batterie trotz Ladebefehl nichts mehr aufnimmt
+        _st53 = states.get(name, {}) or {}
+        if bms.get('phase') == 'charging' and min(int(FULL_CHARGE_SOC), 99) <= soc < int(FULL_CHARGE_SOC):
+            _cmd53 = (getattr(self, '_bms_last_cmd', None) or {}).get(name)
+            try:
+                _pw53 = max(abs(float(_st53.get('ac') or 0)), abs(float(_st53.get('bp') or 0)))
+            except (TypeError, ValueError):
+                _pw53 = 9999.0
+            if _cmd53 and str(_cmd53[0]).startswith('charge') and _pw53 < float(globals().get('BMS_FULL_STALL_W', 60)):
+                bms.setdefault('stall_since', now_ts)
+                if now_ts - float(bms['stall_since']) >= float(globals().get('BMS_FULL_STALL_S', 1800)):
+                    write_logs.append(f"{name}: BMS {soc}% und seit {int((now_ts - float(bms['stall_since'])) // 60)} min "
+                                      f"keine Ladeleistung mehr -> gilt als voll")
+                    soc = int(FULL_CHARGE_SOC)
+            else:
+                bms.pop('stall_since', None)
+        else:
+            bms.pop('stall_since', None)
         # FIX 18: Haltephase laeuft bis holding_until, auch wenn der SoC kurz auf 98 % faellt
         if bms.get("phase") == "hold":
             if now_ts >= float(bms.get("holding_until") or 0):

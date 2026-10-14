@@ -22,6 +22,25 @@
        "conditions": [
         {
          "condition": "state",
+         "entity": "update.marstek_software",
+         "state": "on"
+        }
+       ],
+       "card": {
+        "type": "vertical-stack",
+        "cards": [
+         {
+          "type": "markdown",
+          "content": "### 🔔 Update verfügbar\nVersion **{{ state_attr('update.marstek_software','latest_version') }}** ist da (installiert: {{ state_attr('update.marstek_software','installed_version') }}). [Release auf GitHub]({{ state_attr('update.marstek_software','release_url') }})\n\n{{ state_attr('sensor.marstek_update_notes','notes') or '' }}\n\n**Einspielen:** im Terminal von Home Assistant denselben Befehl wie bei der Installation ausführen – alle Einstellungen bleiben erhalten, vorher werden Sicherungen angelegt:\n\n`curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash`"
+         }
+        ]
+       }
+      },
+      {
+       "type": "conditional",
+       "conditions": [
+        {
+         "condition": "state",
          "entity": "switch.marstek_read_only",
          "state": "on"
         }
@@ -3044,7 +3063,7 @@
        "grid_options": {
         "columns": "full"
        },
-       "content": "<details><summary>📋 <b>BMS-Pflege: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('ENABLE_BMS_CARE','switch','BMS-Pflege (Vollladung)',''),('FULL_CHARGE_SOC','number','Vollladung bis','%'),('FULL_CHARGE_INTERVAL_DAYS','number','Vollladung alle','Tage'),('BMS_CARE_REQUIRE_PV','switch','Sonne bevorzugen',''),('BMS_CARE_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Wozu?** Lithium-Akkus zeigen den Ladestand nur dann genau an und gleichen ihre Zellen nur dann aus, wenn sie ab und zu **ganz voll** werden. Den Ausgleich (Zell-Balancing) macht das BMS in der Venus selbst – die Steuerung sorgt nur dafür, dass jede Batterie regelmäßig dorthin kommt. Es wird höchstens **eine Batterie pro Tag** voll geladen, die anderen regeln ganz normal weiter.\n\n**So läuft eine BMS-Pflege ab:**\n1. **Fällig:** nach „Vollladung alle“ (Standard 10 Tage) – oder früher, wenn die Zellspannungen zu weit auseinanderliegen (nur Modbus, siehe unten).\n2. **Laden:** Mit „Sonne bevorzugen“ nur mit PV-Überschuss; bei Wolken oder nachts macht sie Pause. Ist sie nach „Max. Warten auf Sonne“ immer noch nicht voll, lädt sie auch aus dem Netz.\n3. **Voll:** Erreicht der Ladestand „Vollladung bis“, gilt die Pflege als erledigt. Die Batterie bekommt dann **45 min Ruhe** (kein Laden, kein Entladen) – in dieser Zeit gleicht das BMS die Zellen aus.\n4. **Danach** wird sie noch **30 min nicht entladen**, dann regelt sie wieder normal mit.\n\n**Die Einstellungen:**\n- **BMS-Pflege (Vollladung):** ein/aus. Empfehlung: an.\n- **Vollladung bis** (Standard 99 %): ab diesem Ladestand gilt die Batterie als voll. **Warum 99 und nicht 100 %?** Manche Akkus zeigen 100 % erst sehr spät oder gar nicht an, auch wenn sie praktisch voll sind. Mit 99 % kann die Pflege nicht „hängen bleiben“. 100 % ist möglich und gleicht etwas gründlicher aus – zeigt die Batterie aber nie 100 %, läuft die Pflege so lange weiter und blockiert die Pflege der anderen.\n- **Vollladung alle:** wie oft, in Tagen (10 Tage ≈ 3× im Monat).\n- **Sonne bevorzugen:** an = eine fällige Vollladung lädt nur mit PV-Überschuss.\n- **Max. Warten auf Sonne:** kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h ab Fälligkeit).\n- **Vorziehen ab Zell-Unterschied** (nur bei **Modbus**): Liegen höchste und niedrigste Zellspannung einer Venus mindestens 30 min so weit auseinander, startet ihre Pflege schon früher – nur mit PV-Überschuss, nie aus dem Netz. 0 = aus, Standard 100 mV. Über die WLAN-API gibt es keine Zellspannungen, dort entfällt das.\n- **Vorziehen frühestens nach:** so viele Tage nach der letzten Vollladung (Standard 3).\n\nWann eine Batterie zuletzt dran war und wann sie wieder fällig ist, steht im Tab **Batterien** bei der jeweiligen Venus.\n</details>\n</details>"
+       "content": "<details><summary>📋 <b>BMS-Pflege: Tabelle Jetzt/Original &amp; Hilfe</b></summary>\n\n{% set o = state_attr('sensor.marstek_overrides','original') or {} %}{% set rows = [('ENABLE_BMS_CARE','switch','BMS-Pflege (Vollladung)',''),('FULL_CHARGE_SOC','number','Vollladung bis','%'),('FULL_CHARGE_INTERVAL_DAYS','number','Vollladung alle','Tage'),('BMS_CARE_REQUIRE_PV','switch','Sonne bevorzugen',''),('BMS_CARE_PV_WAIT_H','number','Max. Warten auf Sonne','h')] %}| Einstellung | Jetzt | Original (pv_config) |\n|---|---|---|\n{% for k,t,n,u in rows %}{% set cur = states(t ~ '.marstek_' ~ k|lower) %}{% set org = o.get(k) %}{% if t == 'switch' %}{% set cv = 'an' if cur == 'on' else ('aus' if cur == 'off' else '?') %}{% set ov = '–' if org is none else ('an' if org else 'aus') %}{% else %}{% set cv = (cur|float(0)|round(0)|int ~ ' ' ~ u) if is_number(cur) else '?' %}{% set ov = '–' if org is none else (org|float(0)|round(0)|int ~ ' ' ~ u) %}{% endif %}{% if org is not none and cv != ov %}| ⚠️ **{{ n }}** | **{{ cv }}** | {{ ov }} |{% else %}| {{ n }} | {{ cv }} | {{ ov }} |{% endif %}\n{% endfor %}\n\n<details><summary>ℹ️ <b>Was bedeutet das?</b></summary>\n\n**Wozu?** Lithium-Akkus zeigen den Ladestand nur dann genau an und gleichen ihre Zellen nur dann aus, wenn sie ab und zu **ganz voll** werden. Den Ausgleich (Zell-Balancing) macht das BMS in der Venus selbst – die Steuerung sorgt nur dafür, dass jede Batterie regelmäßig dorthin kommt. Es wird höchstens **eine Batterie pro Tag** voll geladen, die anderen regeln ganz normal weiter.\n\n**So läuft eine BMS-Pflege ab:**\n1. **Fällig:** nach „Vollladung alle“ (Standard 10 Tage) – oder früher, wenn die Zellspannungen zu weit auseinanderliegen (nur Modbus, siehe unten).\n2. **Laden:** Mit „Sonne bevorzugen“ nur mit PV-Überschuss; bei Wolken oder nachts macht sie Pause. Ist sie nach „Max. Warten auf Sonne“ immer noch nicht voll, lädt sie auch aus dem Netz.\n3. **Voll:** Erreicht der Ladestand „Vollladung bis“, gilt die Pflege als erledigt. Die Batterie bekommt dann **45 min Ruhe** (kein Laden, kein Entladen) – in dieser Zeit gleicht das BMS die Zellen aus.\n4. **Danach** wird sie noch **30 min nicht entladen**, dann regelt sie wieder normal mit.\n\n**Die Einstellungen:**\n- **BMS-Pflege (Vollladung):** ein/aus. Empfehlung: an.\n- **Vollladung bis** (Standard 100 %): ab diesem Ladestand gilt die Batterie als voll. Bei 100 % gleicht das BMS am gründlichsten aus. Manche Akkus zeigen 100 % aber erst sehr spät oder gar nicht an – damit die Pflege dann nicht „hängen bleibt“, gilt die Batterie auch als voll, wenn sie **mindestens 99 %** zeigt und **30 min lang trotz Ladebefehl keine Leistung mehr aufnimmt**.\n- **Vollladung alle:** wie oft, in Tagen (10 Tage ≈ 3× im Monat).\n- **Sonne bevorzugen:** an = eine fällige Vollladung lädt nur mit PV-Überschuss.\n- **Max. Warten auf Sonne:** kommt so lange keine Sonne, wird **aus dem Netz** voll geladen (Standard 48 h ab Fälligkeit).\n- **Vorziehen ab Zell-Unterschied** (nur bei **Modbus**): Liegen höchste und niedrigste Zellspannung einer Venus mindestens 30 min so weit auseinander, startet ihre Pflege schon früher – nur mit PV-Überschuss, nie aus dem Netz. 0 = aus, Standard 100 mV. Über die WLAN-API gibt es keine Zellspannungen, dort entfällt das.\n- **Vorziehen frühestens nach:** so viele Tage nach der letzten Vollladung (Standard 3).\n\nWann eine Batterie zuletzt dran war und wann sie wieder fällig ist, steht im Tab **Batterien** bei der jeweiligen Venus.\n</details>\n</details>"
       },
       {
        "type": "entities",
@@ -3162,6 +3181,10 @@
            "icon": "mdi:restore-alert"
           }
          ]
+        },
+        {
+         "entity": "update.marstek_software",
+         "name": "Software-Update"
         }
        ]
       },
@@ -3287,6 +3310,10 @@
         "columns": "full"
        },
        "content": "<details><summary>ℹ️ <b>Löschen oder nur deaktivieren?</b></summary>\n\n- **Deaktivieren** (Schalter oben „Venus N vom Script gesteuert“ aus): Die Batterie bekommt einmal STOP und wird dann in Ruhe gelassen. Sie bleibt eingetragen und kann jederzeit wieder eingeschaltet werden. **Das ist der richtige Weg für Wartung oder Tests.**\n- **Löschen**: Die Batterie wird komplett aus der Regelung entfernt (vorher STOP). Zur Sicherheit **zweimal innerhalb von 15 Sekunden** drücken. Die letzte Batterie kann nicht gelöscht werden. Rückgängig machen: neu anlegen oder Werksreset.\n</details>"
+      },
+      {
+       "type": "markdown",
+       "content": "<details><summary>ℹ️ <b>Software-Update: Wie geht das?</b></summary>\n\nDie Steuerung schaut alle 6 Stunden auf GitHub nach, ob es eine neue Version gibt. Ist eine da, erscheint oben in der **Übersicht** ein Hinweis mit allen Neuerungen seit deiner Version, und Home Assistant zeigt sie zusätzlich unter **Einstellungen → Updates**.\n\n**Einspielen:** im Terminal von Home Assistant den Installationsbefehl ausführen (steht im Hinweis). Alle Einstellungen, Batterien und Dashboard-Werte bleiben erhalten, vorher werden Sicherungen angelegt.\n\nAbschalten der Prüfung: in `pv_config.py` die Zeile `UPDATE_CHECK = False` ergänzen.\n</details>"
       }
      ]
     },

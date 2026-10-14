@@ -167,6 +167,8 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Cell voltages (Modbus only):** With a Modbus connection the *Batterien* tab shows the highest and lowest cell voltage and the difference in mV per Venus. If the difference stays above the limit (default 100 mV), the BMS care charge is started early - only with PV surplus. The WLAN API does not provide cell voltages.
 
+**Updates:** The control checks GitHub every 6 hours. If there is a new version, the *Übersicht* view shows a hint with all changes (also under *Settings → Updates*). Install it with the install command - all settings are kept.
+
 **Without the installer** (advanced): AppDaemon add-on with the Python packages *pymodbus==3.9.2* and
 *paho-mqtt*, copy the folder *apps/marstek_venus* into the AppDaemon apps folder, add to *apps.yaml*:
 
