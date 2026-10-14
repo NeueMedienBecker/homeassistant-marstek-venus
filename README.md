@@ -105,7 +105,8 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 | --yes | Update ohne Rückfragen |
 | --lang en | Installer auf Englisch |
 | --uninstall | Steuerung entfernen (mit Sicherung) |
-| --diag | Fehlersuche: erstellt einen Bericht zum Weitergeben (ohne Passwörter), verändert nichts |
+| --diag | Fehlersuche: erstellt einen Bericht zum Weitergeben (ohne Passwörter) und bietet an, gefundene Probleme gleich zu beheben. Vorhandene MQTT-Benutzer und Passwörter werden dabei nie geändert |
+| --fix | wie --diag, behebt gefundene Probleme aber ohne Rückfrage |
 
 ---
 

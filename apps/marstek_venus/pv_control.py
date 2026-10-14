@@ -82,7 +82,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.13"  # FIX 39
+PV_CONTROL_VERSION = "2.0.14"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.

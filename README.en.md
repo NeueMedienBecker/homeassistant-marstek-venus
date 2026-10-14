@@ -96,7 +96,8 @@ replaced if you confirm.
 | Option | Effect |
 |---|---|
 | --fresh | fresh setup: delete batteries, meter and dashboard values (with backup) |
-| --diag | troubleshooting: creates a report to share (no passwords), changes nothing |
+| --diag | troubleshooting: creates a report to share (no passwords) and offers to fix the problems found. Existing MQTT users and passwords are never changed |
+| --fix | like --diag, but fixes the problems without asking |
 | --meter | pick the grid meter again only (e.g. after setting up the meter) |
 | --reconfigure | ask batteries and grid meter again (e.g. RS485 adapters, other meter) |
 | --ask | new installation with all questions instead of automatic |

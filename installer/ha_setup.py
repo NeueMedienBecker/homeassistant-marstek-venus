@@ -210,6 +210,7 @@ class Abort(Exception):
 
 _TTY = None
 AUTO_YES = False
+FIX_NOW = False             # --fix: gefundene Probleme ohne Rueckfrage beheben
 
 
 def _tty():
@@ -819,8 +820,18 @@ def start_or_restart(slug, name, restart=False):
     return False
 
 
+LOCAL_BROKERS = ("core-mosquitto", "localhost", "127.0.0.1")
+
+
 def setup_mosquitto(login):
+    """Legt den MQTT-Benutzer der Steuerung in Mosquitto an, falls er fehlt. Vorhandene Benutzer und
+    Passwoerter werden NIE geaendert (andere Geraete koennten sie benutzen): weicht das Passwort ab, wird das
+    Passwort aus Mosquitto fuer die Steuerung uebernommen. Rueckgabe: True, wenn sich 'login' geaendert hat."""
     info = ensure_addon(ADDON_MOSQUITTO, "Mosquitto broker")
+    if str(login.get("host") or "core-mosquitto") not in LOCAL_BROKERS:
+        ok(L(f"Die Steuerung benutzt den MQTT-Broker {login.get('host')} - Mosquitto-Benutzer bleiben unveraendert",
+             f"The control uses the MQTT broker {login.get('host')} - Mosquitto users stay unchanged"))
+        return False
     opts = dict((info or {}).get("options") or {})
     logins = list(opts.get("logins") or [])
     mine = [x for x in logins if x.get("username") == login["user"]]
@@ -829,8 +840,12 @@ def setup_mosquitto(login):
         logins.append({"username": login["user"], "password": login["password"]})
         changed = True
     elif mine[0].get("password") != login["password"]:
-        mine[0]["password"] = login["password"]
-        changed = True
+        login["password"] = mine[0].get("password")
+        ok(L(f"MQTT-Benutzer '{login['user']}' vorhanden - sein Passwort wird fuer die Steuerung uebernommen "
+             f"(Mosquitto bleibt unveraendert)", f"MQTT user '{login['user']}' exists - its password is used for "
+             f"the control (Mosquitto unchanged)"))
+        start_or_restart(ADDON_MOSQUITTO, "Mosquitto")
+        return True
     if changed and not DRY:
         opts["logins"] = logins
         sup("POST", f"/addons/{ADDON_MOSQUITTO}/options", {"options": opts})
@@ -842,6 +857,7 @@ def setup_mosquitto(login):
     else:
         ok(L(f"MQTT-Benutzer '{login['user']}' vorhanden", f"MQTT user '{login['user']}' present"))
         start_or_restart(ADDON_MOSQUITTO, "Mosquitto")
+    return False
 
 
 def setup_appdaemon():
@@ -1906,8 +1922,13 @@ def do_diag(version):
         line("")
         line(f"== {t} ==")
 
-    def prob(t):
-        problems.append(t)
+    fixes = []
+    ctx = {"login": None, "app_dir": None, "root": None, "mqtt_entries": [], "disabled_ents": [], "local": True}
+
+    def prob(t, fix=None):
+        problems.append(t + ("  [automatisch behebbar]" if fix else ""))
+        if fix and fix not in fixes:
+            fixes.append(fix)
 
     mosq_logins = []
     line(f"Marstek Venus Steuerung - Fehlersuche ({time.strftime('%Y-%m-%d %H:%M:%S')}), Installer {version}")
@@ -1924,11 +1945,12 @@ def do_diag(version):
         info = addon_info(slug)
         if not info:
             line(f"{name}: NICHT installiert")
-            prob(f"{name} ist nicht installiert - den normalen Installationsbefehl ausfuehren.")
+            prob(f"{name} ist nicht installiert.", "addon_mosq" if slug == ADDON_MOSQUITTO else "addon_ad")
             continue
         line(f"{name}: {info.get('state')} | Version {info.get('version')} | Autostart {info.get('boot')}")
         if info.get("state") != "started":
-            prob(f"{name} laeuft nicht (Status {info.get('state')}).")
+            prob(f"{name} laeuft nicht (Status {info.get('state')}).",
+                 "addon_mosq" if slug == ADDON_MOSQUITTO else "addon_ad")
         opts = info.get("options") or {}
         if slug == ADDON_MOSQUITTO:
             users = [x.get("username") for x in (opts.get("logins") or [])]
@@ -1937,7 +1959,7 @@ def do_diag(version):
         else:
             line(f"AppDaemon python_packages: {opts.get('python_packages')}")
             if "paho-mqtt" not in " ".join(map(str, opts.get("python_packages") or [])):
-                prob("AppDaemon: Python-Paket paho-mqtt fehlt - den normalen Installationsbefehl ausfuehren.")
+                prob("AppDaemon: Python-Paket paho-mqtt fehlt.", "paho")
 
     sec("App-Dateien")
     root = None
@@ -1946,6 +1968,7 @@ def do_diag(version):
             root = p_
             break
     app_dir = find_existing_app(os.path.join(root, "apps")) if root else None
+    ctx["app_dir"], ctx["root"] = app_dir, root
     if not app_dir:
         line("Keine Installation gefunden.")
         prob("Die Steuerung ist nicht installiert (App-Ordner fehlt).")
@@ -1972,25 +1995,29 @@ def do_diag(version):
                         pass
         line(f"App in apps.yaml eingetragen (module: pv_control): {'ja' if in_yaml else 'NEIN'}")
         if not in_yaml:
-            prob("apps.yaml enthaelt die App nicht - AppDaemon startet die Steuerung nicht.")
+            prob("apps.yaml enthaelt die App nicht - AppDaemon startet die Steuerung nicht.", "apps_yaml")
 
         login = _diag_json(os.path.join(app_dir, "pv_mqtt_login.json"))
+        ctx["login"] = login
         if not login:
             line("pv_mqtt_login.json: FEHLT oder unlesbar")
-            prob("MQTT-Zugang (pv_mqtt_login.json) fehlt - ohne ihn gibt es keine Schalter im Dashboard.")
+            prob("MQTT-Zugang (pv_mqtt_login.json) fehlt - ohne ihn gibt es keine Schalter im Dashboard.", "login")
         else:
             line(f"pv_mqtt_login.json: host={login.get('host')} port={login.get('port')} user={login.get('user')} "
                  f"Passwort {'gesetzt' if login.get('password') else 'LEER'}")
-            if login.get("user"):
+            ctx["local"] = str(login.get("host") or "core-mosquitto") in ("core-mosquitto", "localhost", "127.0.0.1")
+            if not ctx["local"]:
+                line(f"Die Steuerung benutzt einen eigenen Broker ({login.get('host')}) - Mosquitto-Benutzer nicht geprueft")
+            elif login.get("user"):
                 mine = [x for x in mosq_logins if x.get("username") == login.get("user")]
                 if not mine:
                     line(f"Mosquitto kennt den Benutzer '{login.get('user')}' NICHT")
-                    prob(f"Mosquitto kennt den MQTT-Benutzer '{login.get('user')}' nicht.")
+                    prob(f"Mosquitto kennt den MQTT-Benutzer '{login.get('user')}' nicht.", "mosq_user")
                 else:
                     same = mine[0].get("password") == login.get("password")
                     line(f"Passwort in Mosquitto und pv_mqtt_login.json: {'gleich' if same else 'UNTERSCHIEDLICH'}")
                     if not same:
-                        prob("Das MQTT-Passwort in Mosquitto passt nicht zu pv_mqtt_login.json.")
+                        prob("Das MQTT-Passwort in Mosquitto passt nicht zu pv_mqtt_login.json.", "mosq_user")
 
         try:
             vals = config_values(read(os.path.join(app_dir, "pv_config.py")))
@@ -2024,21 +2051,22 @@ def do_diag(version):
         mq = [e for e in ((ce.get("data") or {}).get("entries") or []) if e.get("domain") == "mqtt"]
         if not mq:
             line("MQTT-Integration: NICHT eingerichtet")
-            prob("Die MQTT-Integration fehlt in Home Assistant - deshalb gibt es keine Schalter und Knoepfe.")
+            prob("Die MQTT-Integration fehlt in Home Assistant - deshalb gibt es keine Schalter und Knoepfe.",
+                 "mqtt_missing")
+        ctx["mqtt_entries"] = mq
         for e in mq:
             d, o = dict(e.get("data") or {}), dict(e.get("options") or {})
             disc = o.get("discovery", d.get("discovery", True))
             line(f"MQTT-Integration: broker={d.get('broker')} port={d.get('port')} user={d.get('username')} "
                  f"discovery={disc} deaktiviert={e.get('disabled_by')}")
             if e.get("disabled_by"):
-                prob("Die MQTT-Integration ist deaktiviert.")
+                prob("Die MQTT-Integration ist deaktiviert.", "mqtt_disabled")
             if disc is False:
-                prob("MQTT-Discovery ist ausgeschaltet - Einstellungen > Geraete & Dienste > MQTT > Konfigurieren > "
-                     "'Discovery aktivieren'.")
+                prob("MQTT-Discovery ist ausgeschaltet.", "discovery")
             if login and str(d.get("broker") or "") not in ("core-mosquitto", "localhost", "127.0.0.1",
                                                               str(login.get("host"))):
                 prob(f"Die MQTT-Integration zeigt auf einen anderen Broker ({d.get('broker')}) als die Steuerung "
-                     f"({login.get('host')}).")
+                     f"({login.get('host')}).", "broker")
     if er is not None:
         ents = (er.get("data") or {}).get("entities") or []
         mine = [x for x in ents if str(x.get("unique_id") or "").startswith("marstek_ctrl_")]
@@ -2046,10 +2074,11 @@ def do_diag(version):
         line(f"Steuer-Entitaeten (switch/number/button.marstek_*): {len(mine)}, davon deaktiviert: {len(dis)}")
         for x in mine[:3]:
             line(f"  z.B. {x.get('entity_id')}")
+        ctx["disabled_ents"] = [x.get("entity_id") for x in dis]
         if not mine:
-            prob("In Home Assistant gibt es keine Steuer-Entitaeten - MQTT-Discovery ist nie angekommen.")
+            prob("In Home Assistant gibt es keine Steuer-Entitaeten - MQTT-Discovery ist nie angekommen.", "republish")
         if dis:
-            prob(f"{len(dis)} Steuer-Entitaeten sind in Home Assistant deaktiviert.")
+            prob(f"{len(dis)} Steuer-Entitaeten sind in Home Assistant deaktiviert.", "ent_disabled")
         sens = [x for x in ents if str(x.get("entity_id") or "").startswith(("sensor.marstekvenus_", "sensor.pv_battery"))]
         line(f"Batterie-Sensoren in der Registry: {len(sens)} (die meisten legt das Skript ohne Registry an)")
 
@@ -2070,11 +2099,11 @@ def do_diag(version):
         for k, n in sorted(warns.items(), key=lambda x: -x[1])[:12]:
             line(f"   {n:5d} x {k}")
     if re.search(r"Verbindung abgelehnt|Not authori[sz]ed|rc=5|rc=4", full, re.I):
-        prob("Die Steuerung wird von Mosquitto abgelehnt (Benutzer/Passwort).")
+        prob("Die Steuerung wird vom MQTT-Broker abgelehnt (Benutzer/Passwort).", "mosq_user" if ctx["local"] else None)
     if re.search(r"No module named 'paho'|paho.* fehlt", full, re.I):
-        prob("paho-mqtt ist in AppDaemon nicht installiert.")
+        prob("paho-mqtt ist in AppDaemon nicht installiert.", "paho")
     if re.search(r"pv_mqtt_login\.json fehlt", full, re.I):
-        prob("Die Steuerung meldet: pv_mqtt_login.json fehlt.")
+        prob("Die Steuerung meldet: pv_mqtt_login.json fehlt.", "login")
 
     sec("Mosquitto-Log")
     sel, _ = _diag_logs(ADDON_MOSQUITTO, 1000, r"marstek|denied|not authori|error|refused", 30)
@@ -2085,8 +2114,9 @@ def do_diag(version):
     if problems:
         for t in problems:
             line(f"!! {t}")
-        line("")
-        line("Tipp: Viele dieser Punkte behebt der normale Installationsbefehl (Update, Einstellungen bleiben).")
+        if not fixes:
+            line("")
+            line("Tipp: Viele dieser Punkte behebt der normale Installationsbefehl (Update, Einstellungen bleiben).")
     else:
         line("Keine offensichtlichen Fehler gefunden. Bitte diesen Bericht an den Entwickler schicken.")
 
@@ -2100,7 +2130,163 @@ def do_diag(version):
              f"Report saved: {fn} (no passwords)."))
     except OSError as e:
         warn(f"Bericht nicht gespeichert: {e}")
+    if fixes and ctx["root"]:
+        if "republish" in fixes and len(fixes) > 1:
+            fixes.remove("republish")  # die anderen Reparaturen starten AppDaemon ohnehin neu
+        say()
+        head(L("Reparatur", "Repair"))
+        for f_ in fixes:
+            say(f"  - {DIAG_FIX_TEXT.get(f_, f_)}")
+        if FIX_NOW or ask_yes(L("Soll ich das jetzt beheben? Die Einstellungen der Steuerung bleiben erhalten.",
+                                "Fix this now? The control settings are kept."), False):
+            diag_repair(fixes, ctx)
+        else:
+            hint(L("Nichts veraendert. Spaeter beheben: denselben Befehl mit --fix statt --diag.",
+                   "Nothing changed. To fix later: same command with --fix instead of --diag."))
     return 0
+
+
+DIAG_FIX_TEXT = {
+    "addon_mosq": "Mosquitto installieren bzw. starten",
+    "addon_ad": "AppDaemon installieren bzw. starten",
+    "paho": "Python-Paket paho-mqtt in AppDaemon eintragen",
+    "login": "MQTT-Zugang fuer die Steuerung anlegen (eigener Benutzer 'marstek'; andere Benutzer und Passwoerter bleiben unveraendert)",
+    "mosq_user": "MQTT-Zugang der Steuerung an Mosquitto anpassen (es wird kein vorhandenes Passwort geaendert)",
+    "apps_yaml": "Steuerung in apps.yaml eintragen",
+    "broker": "Steuerung auf denselben MQTT-Broker wie Home Assistant umstellen (Zugangsdaten aus der MQTT-Integration)",
+    "mqtt_missing": "MQTT-Integration in Home Assistant einrichten",
+    "mqtt_disabled": "MQTT-Integration in Home Assistant wieder aktivieren",
+    "discovery": "MQTT-Discovery in Home Assistant einschalten",
+    "ent_disabled": "deaktivierte Steuer-Entitaeten wieder aktivieren",
+    "republish": "AppDaemon neu starten, damit die Steuerung ihre Schalter neu an Home Assistant meldet",
+}
+
+
+def _mqtt_options_discovery(entry_id):
+    """MQTT-Optionen: Discovery einschalten (andere Werte bleiben wie vorgeschlagen)."""
+    flow = core("POST", "/config/config_entries/options/flow", {"handler": entry_id})
+    for _ in range(6):
+        typ = (flow or {}).get("type")
+        if typ == "create_entry":
+            return True
+        if typ == "abort" or not flow.get("flow_id"):
+            return False
+        fid = flow["flow_id"]
+        if typ == "menu":
+            opts = flow.get("menu_options") or []
+            pick = "options" if "options" in opts else (opts[-1] if opts else None)
+            flow = core("POST", f"/config/config_entries/options/flow/{fid}", {"next_step_id": pick})
+            continue
+        data = {}
+        for fld in flow.get("data_schema") or []:
+            n = fld.get("name")
+            sv = (fld.get("description") or {}).get("suggested_value") if isinstance(fld.get("description"), dict) else None
+            if sv is not None:
+                data[n] = sv
+            elif "default" in fld:
+                data[n] = fld["default"]
+        if any(f.get("name") == "discovery" for f in flow.get("data_schema") or []):
+            data["discovery"] = True
+        flow = core("POST", f"/config/config_entries/options/flow/{fid}", data)
+    return False
+
+
+def diag_repair(fixes, ctx):
+    global DRY
+    DRY = False
+    apps = os.path.join(ctx["root"], "apps")
+    app_dir = ctx["app_dir"] or os.path.join(apps, APP_FOLDER_NAME)
+    login_path = os.path.join(app_dir, "pv_mqtt_login.json")
+    login = ctx["login"]
+    done = []
+    try:
+        if "addon_mosq" in fixes:
+            ensure_addon(ADDON_MOSQUITTO, "Mosquitto broker")
+            start_or_restart(ADDON_MOSQUITTO, "Mosquitto")
+            done.append("addon_mosq")
+        if "login" in fixes or not login or "mosq_user" in fixes:
+            mosq = [x.get("username") for x in (((addon_info(ADDON_MOSQUITTO) or {}).get("options") or {}).get("logins") or [])]
+            if not login or (login.get("user") != MQTT_USER and login.get("user") not in mosq):
+                # eigener Benutzer 'marstek' - gibt es ihn schon, wird sein Passwort uebernommen (nicht geaendert)
+                login = {"host": "core-mosquitto", "port": 1883, "user": MQTT_USER,
+                         "password": secrets.token_urlsafe(18)}
+            setup_mosquitto(login)
+            if os.path.exists(login_path):
+                backup_file(login_path, "vor_diag_fix")
+            write_file(login_path, json.dumps(login, indent=2))
+            done.append("login")
+        if "addon_ad" in fixes or "paho" in fixes:
+            setup_appdaemon()
+            done.append("appdaemon")
+        if "apps_yaml" in fixes:
+            ensure_apps_yaml(apps)
+            done.append("apps_yaml")
+        if "broker" in fixes and ctx["mqtt_entries"]:
+            d = dict(ctx["mqtt_entries"][0].get("data") or {})
+            new = {"host": d.get("broker"), "port": int(d.get("port") or 1883),
+                   "user": d.get("username") or "", "password": d.get("password") or ""}
+            backup_file(login_path, "vor_diag_fix")
+            write_file(login_path, json.dumps(new, indent=2))
+            ok(L(f"Steuerung benutzt jetzt den MQTT-Broker von Home Assistant ({new['host']})",
+                 f"Control now uses Home Assistant's MQTT broker ({new['host']})"))
+            login = new
+            done.append("broker")
+        need_core = [f for f in fixes if f in ("mqtt_missing", "mqtt_disabled", "discovery", "ent_disabled")]
+        if need_core:
+            start_or_restart(ADDON_APPDAEMON, "AppDaemon")
+            if ensure_core_access(apps):
+                if "mqtt_missing" in fixes and ensure_mqtt_integration(login):
+                    done.append("mqtt_missing")
+                ws = None
+                try:
+                    if "mqtt_disabled" in fixes or "ent_disabled" in fixes:
+                        ws = WS()
+                    if "mqtt_disabled" in fixes:
+                        for e in ctx["mqtt_entries"]:
+                            if e.get("disabled_by"):
+                                ws.call("config_entries/disable", entry_id=e.get("entry_id"), disabled_by=None)
+                        ok(L("MQTT-Integration aktiviert", "MQTT integration enabled"))
+                        done.append("mqtt_disabled")
+                    if "ent_disabled" in fixes:
+                        for eid in ctx["disabled_ents"]:
+                            ws.call("config/entity_registry/update", entity_id=eid, disabled_by=None)
+                        ok(L(f"{len(ctx['disabled_ents'])} Entitaeten aktiviert",
+                             f"{len(ctx['disabled_ents'])} entities enabled"))
+                        done.append("ent_disabled")
+                finally:
+                    if ws:
+                        ws.close()
+                if "discovery" in fixes:
+                    ok_ = False
+                    for e in ctx["mqtt_entries"]:
+                        try:
+                            ok_ = _mqtt_options_discovery(e.get("entry_id")) or ok_
+                        except ApiError as ex:
+                            warn(str(ex))
+                    if ok_:
+                        ok(L("MQTT-Discovery eingeschaltet", "MQTT discovery enabled"))
+                        done.append("discovery")
+                    else:
+                        warn(L("Discovery konnte nicht automatisch eingeschaltet werden.",
+                               "Discovery could not be enabled automatically."))
+                        hint(L("Bitte von Hand: Einstellungen -> Geraete & Dienste -> MQTT -> Konfigurieren -> "
+                               "'Discovery aktivieren'.", "Please manually: Settings -> Devices & services -> MQTT -> "
+                               "Configure -> 'Enable discovery'."))
+            else:
+                warn(L("Kein Zugriff auf Home Assistant - diese Punkte bitte von Hand pruefen: ",
+                       "No access to Home Assistant - please check manually: ")
+                     + ", ".join(DIAG_FIX_TEXT[f] for f in need_core))
+        head("AppDaemon")
+        start_or_restart(ADDON_APPDAEMON, "AppDaemon", restart=True)
+        done.append("republish")
+    except (ApiError, OSError, Abort) as e:
+        err(L(f"Reparatur abgebrochen: {e}", f"Repair aborted: {e}"))
+    finally:
+        remove_core_bridge(apps)
+    say()
+    ok(L("Fertig. Bitte in 1-2 Minuten das Dashboard neu laden (Seite neu laden). Zur Kontrolle kann --diag "
+         "erneut ausgefuehrt werden.", "Done. Please reload the dashboard in 1-2 minutes. Run --diag again to check."))
+
 
 
 def do_uninstall():
@@ -2148,13 +2334,16 @@ def main():
     ap.add_argument("--fresh", action="store_true", help="alles neu einrichten (alte Einstellungen loeschen, mit Sicherung)")
     ap.add_argument("--yes", action="store_true", help="alle Vorschlaege uebernehmen (Update ohne Rueckfragen)")
     ap.add_argument("--ask", action="store_true", help="Neuinstallation: alles einzeln abfragen statt automatisch")
-    ap.add_argument("--diag", action="store_true", help="Fehlersuche: Bericht erstellen, nichts veraendern")
+    ap.add_argument("--diag", action="store_true", help="Fehlersuche: Bericht erstellen, auf Wunsch beheben")
+    ap.add_argument("--fix", action="store_true", help="Fehlersuche und gefundene Probleme ohne Rueckfrage beheben")
     a = ap.parse_args()
     DRY, AUTO_YES = a.dry_run, a.yes
     version = read(VERSION_FILE).strip() if os.path.exists(VERSION_FILE) else "?"
 
     check_environment()
-    if a.diag:
+    if a.diag or a.fix:
+        global FIX_NOW
+        FIX_NOW = a.fix
         LANG = a.lang or "de"
         return do_diag(version)
     LANG = a.lang or detect_language()
@@ -2213,7 +2402,8 @@ def main():
     if not login or not login.get("user"):
         login = {"host": "core-mosquitto", "port": 1883, "user": MQTT_USER,
                  "password": secrets.token_urlsafe(18)}
-    setup_mosquitto(login)
+    if setup_mosquitto(login) and os.path.exists(login_path) and not DRY:
+        write_file(login_path, json.dumps(login, indent=2))
     setup_appdaemon()
     ensure_core_access(apps)
 

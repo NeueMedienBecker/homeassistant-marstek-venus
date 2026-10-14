@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.14 (2026-10-14)
+
+### Neu
+- **--diag behebt auf Wunsch gleich**: Nach dem Bericht listet der Installer, was er automatisch reparieren kann (Mosquitto/AppDaemon starten, paho-mqtt, MQTT-Zugang, apps.yaml, MQTT-Integration einrichten oder aktivieren, Discovery einschalten, deaktivierte Entitaeten aktivieren, Steuerung auf den Broker von Home Assistant umstellen) und fragt nach. `--fix` repariert ohne Rueckfrage.
+
+### Geaendert
+- Vorhandene MQTT-Benutzer und Passwoerter werden nie mehr geaendert (auch nicht beim normalen Update). Weicht das Passwort ab, uebernimmt die Steuerung das Passwort aus Mosquitto. Fehlt der Benutzer, wird nur der eigene Benutzer 'marstek' ergaenzt. Benutzt die Steuerung einen fremden Broker, bleibt Mosquitto ganz unberuehrt.
+
 ## 2.0.13 (2026-10-14)
 
 ### Neu
