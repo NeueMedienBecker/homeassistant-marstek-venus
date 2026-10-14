@@ -2267,6 +2267,30 @@
           {
            "entity": "number.marstek_battery1_api_port",
            "name": "API UDP-Port"
+          },
+          {
+           "type": "section",
+           "label": "Grenzwerte"
+          },
+          {
+           "entity": "number.marstek_battery1_max_charge_w",
+           "name": "max. Ladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery1_max_discharge_w",
+           "name": "max. Entladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery1_min_soc",
+           "name": "Min-SoC"
+          },
+          {
+           "entity": "number.marstek_battery1_max_soc",
+           "name": "Max-SoC"
+          },
+          {
+           "entity": "number.marstek_battery1_capacity_kwh",
+           "name": "Kapazität"
           }
          ]
         },
@@ -2313,6 +2337,30 @@
           {
            "entity": "number.marstek_battery2_api_port",
            "name": "API UDP-Port"
+          },
+          {
+           "type": "section",
+           "label": "Grenzwerte"
+          },
+          {
+           "entity": "number.marstek_battery2_max_charge_w",
+           "name": "max. Ladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery2_max_discharge_w",
+           "name": "max. Entladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery2_min_soc",
+           "name": "Min-SoC"
+          },
+          {
+           "entity": "number.marstek_battery2_max_soc",
+           "name": "Max-SoC"
+          },
+          {
+           "entity": "number.marstek_battery2_capacity_kwh",
+           "name": "Kapazität"
           }
          ]
         },
@@ -2359,6 +2407,30 @@
           {
            "entity": "number.marstek_battery3_api_port",
            "name": "API UDP-Port"
+          },
+          {
+           "type": "section",
+           "label": "Grenzwerte"
+          },
+          {
+           "entity": "number.marstek_battery3_max_charge_w",
+           "name": "max. Ladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery3_max_discharge_w",
+           "name": "max. Entladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery3_min_soc",
+           "name": "Min-SoC"
+          },
+          {
+           "entity": "number.marstek_battery3_max_soc",
+           "name": "Max-SoC"
+          },
+          {
+           "entity": "number.marstek_battery3_capacity_kwh",
+           "name": "Kapazität"
           }
          ]
         },
@@ -2405,6 +2477,30 @@
           {
            "entity": "number.marstek_battery4_api_port",
            "name": "API UDP-Port"
+          },
+          {
+           "type": "section",
+           "label": "Grenzwerte"
+          },
+          {
+           "entity": "number.marstek_battery4_max_charge_w",
+           "name": "max. Ladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery4_max_discharge_w",
+           "name": "max. Entladeleistung"
+          },
+          {
+           "entity": "number.marstek_battery4_min_soc",
+           "name": "Min-SoC"
+          },
+          {
+           "entity": "number.marstek_battery4_max_soc",
+           "name": "Max-SoC"
+          },
+          {
+           "entity": "number.marstek_battery4_capacity_kwh",
+           "name": "Kapazität"
           }
          ]
         },
@@ -2542,7 +2638,7 @@
        "grid_options": {
         "columns": "full"
        },
-       "content": "<details><summary>ℹ️ <b>Verbindung (IP-Adressen und Ports): Was bedeutet das?</b></summary>\n\nHier stehen die Adressen, unter denen das Script die Batterien erreicht. Änderungen wirken **sofort** (nächster Regelzyklus, ca. 15 s): Die Verbindung zur Batterie wird neu aufgebaut und der Steuermodus neu gesetzt.\n\n- **IP LAN-Adapter (Modbus):** die IP des RS485-LAN-Adapters an der Batterie (Kabel). **Modbus-Port** ist normalerweise 502, **Slave-ID** normalerweise 1.\n- **WLAN-IP Batterie (API):** die WLAN-IP der Batterie selbst – steht in der Marstek-App unter *Einstellungen → WLAN-Konfiguration*. **API UDP-Port** ist normalerweise 30000; die Open API muss in der Marstek-App eingeschaltet sein.\n- **Aktiver Weg:** welcher Weg gerade benutzt wird (Modbus oder API). Die Auswahl des Wegs machst du oben unter „Venus X Anbindung“.\n\nUngültige IP-Adressen werden nicht übernommen (das Feld springt auf den alten Wert zurück). Wie alle Einstellungen gelten die Werte bis zum „Verwerfen“; mit „Einstellungen fest übernehmen“ werden sie in `pv_config.py` geschrieben.\n</details>"
+       "content": "<details><summary>ℹ️ <b>Verbindung (IP-Adressen und Ports): Was bedeutet das?</b></summary>\n\nHier stehen die Adressen, unter denen das Script die Batterien erreicht. Änderungen wirken **sofort** (nächster Regelzyklus, ca. 15 s): Die Verbindung zur Batterie wird neu aufgebaut und der Steuermodus neu gesetzt.\n\n- **IP LAN-Adapter (Modbus):** die IP des RS485-LAN-Adapters an der Batterie (Kabel). **Modbus-Port** ist normalerweise 502, **Slave-ID** normalerweise 1.\n- **WLAN-IP Batterie (API):** die WLAN-IP der Batterie selbst – steht in der Marstek-App unter *Einstellungen → WLAN-Konfiguration*. **API UDP-Port** ist normalerweise 30000; die Open API muss in der Marstek-App eingeschaltet sein.\n- **Aktiver Weg:** welcher Weg gerade benutzt wird (Modbus oder API). Die Auswahl des Wegs machst du oben unter „Venus X Anbindung“.\n\nUngültige IP-Adressen werden nicht übernommen (das Feld springt auf den alten Wert zurück). Wie alle Einstellungen gelten die Werte bis zum „Verwerfen“; mit „Einstellungen fest übernehmen“ werden sie in `pv_config.py` geschrieben.\n\n**Grenzwerte** (je Venus): **max. Ladeleistung** und **max. Entladeleistung** begrenzen, was die Steuerung dieser Batterie höchstens vorgibt (Venus E: bis 2500 W). **Min-SoC**: darunter wird nicht weiter entladen. **Max-SoC**: darüber wird nicht weiter geladen (die BMS-Pflege lädt trotzdem bis „Vollladung bis“). **Kapazität**: nutzbare Größe der Batterie in kWh – damit verteilt die Steuerung die Leistung passend auf mehrere Batterien. Änderungen wirken ab dem nächsten Regelzyklus, die Verbindung wird dafür **nicht** neu aufgebaut. Ist Min-SoC nicht kleiner als Max-SoC, bleiben die alten Werte.\n</details>"
       },
       {
        "type": "entities",

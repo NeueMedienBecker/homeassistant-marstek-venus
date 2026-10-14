@@ -178,6 +178,8 @@ stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, 
 
 **Zähler sendet selten:** Kommt vom Netz-Zähler länger als 60 s kein neuer Wert, gehen die Batterien zur Sicherheit auf STOP. Im Dashboard unter *Konfiguration → Zähler & zweiter Speicher* lässt sich diese Wartezeit einstellen; die **Zähler-Info** daneben zeigt, wie oft der Zähler wirklich neue Werte liefert, und macht einen Vorschlag.
 
+**Grenzwerte je Batterie:** max. Lade- und Entladeleistung, Min-/Max-SoC und Kapazität jeder Venus lassen sich im Dashboard unter *Konfiguration → Hauptschalter & Batterien → Venus X → Grenzwerte* ändern.
+
 **Ohne Installer** (für Erfahrene): AppDaemon-Add-on mit den Python-Paketen *pymodbus==3.9.2* und *paho-mqtt*,
 den Ordner *apps/marstek_venus* in den AppDaemon-apps-Ordner kopieren, in *apps.yaml* eintragen:
 

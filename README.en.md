@@ -163,6 +163,8 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Meter reports rarely:** If the grid meter sends no new value for more than 60 s, the batteries go to STOP for safety. The wait time can be set in the dashboard under *Konfiguration → Zähler & zweiter Speicher*; the **meter info** next to it shows how often the meter really delivers new values and suggests a value.
 
+**Limits per battery:** max. charge and discharge power, min/max SoC and capacity of each Venus can be changed in the dashboard under *Konfiguration → Hauptschalter & Batterien → Venus X → Grenzwerte*.
+
 **Without the installer** (advanced): AppDaemon add-on with the Python packages *pymodbus==3.9.2* and
 *paho-mqtt*, copy the folder *apps/marstek_venus* into the AppDaemon apps folder, add to *apps.yaml*:
 

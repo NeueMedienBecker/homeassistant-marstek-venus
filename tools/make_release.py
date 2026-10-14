@@ -528,6 +528,220 @@ def fix47_dashboard(cfg):
     return cfg
 
 
+LIMIT_HELP_MD = """
+
+**Grenzwerte** (je Venus): **max. Ladeleistung** und **max. Entladeleistung** begrenzen, was die Steuerung dieser Batterie höchstens vorgibt (Venus E: bis 2500 W). **Min-SoC**: darunter wird nicht weiter entladen. **Max-SoC**: darüber wird nicht weiter geladen (die BMS-Pflege lädt trotzdem bis „Vollladung bis“). **Kapazität**: nutzbare Größe der Batterie in kWh – damit verteilt die Steuerung die Leistung passend auf mehrere Batterien. Änderungen wirken ab dem nächsten Regelzyklus, die Verbindung wird dafür **nicht** neu aufgebaut. Ist Min-SoC nicht kleiner als Max-SoC, bleiben die alten Werte."""
+
+LIMIT_ROWS = (("max_charge_w", "max. Ladeleistung"), ("max_discharge_w", "max. Entladeleistung"),
+              ("min_soc", "Min-SoC"), ("max_soc", "Max-SoC"), ("capacity_kwh", "Kapazität"))
+
+
+def fix48_control(src):
+    """FIX 48: Grenzwerte je Batterie (BATTERYn_MAX_CHARGE_W ...) aus dem Dashboard in BATTERY_CONFIG uebernehmen."""
+    if "FIX 48" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 47:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 48: Grenzwerte je Batterie (max. Lade-/Entladeleistung, Min-/Max-SoC, Kapazitaet) im Dashboard "
+                                "aenderbar (BATTERYn_MAX_CHARGE_W, _MAX_DISCHARGE_W, _MIN_SOC, _MAX_SOC, _CAPACITY_KWH); ohne Treiber-Neuaufbau.")
+    i = find(L, "CONN_PARAMS = (")
+    j = i
+    while L[j].strip() != ")":
+        j += 1
+    L[j + 1:j + 1] = [
+        "# FIX 48: Grenzwerte je Batterie aus dem Dashboard -> Schluessel in BATTERY_CONFIG",
+        "LIMIT_PARAMS = (",
+        '    ("_MAX_CHARGE_W", "max_charge_w", int, 0, 10000),',
+        '    ("_MAX_DISCHARGE_W", "max_discharge_w", int, 0, 10000),',
+        '    ("_MIN_SOC", "min_soc", int, 0, 50),',
+        '    ("_MAX_SOC", "max_soc", int, 50, 100),',
+        '    ("_CAPACITY_KWH", "capacity_kwh", float, 0.5, 50),',
+        ")",
+    ]
+    i = find(L, "def _sync_conn_params(self, name, initial=False):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _sync_limit_params(self, name, initial=False):",
+        b + "    \"\"\"FIX 48: Grenzwerte aus dem Dashboard (BATTERYn_MAX_CHARGE_W usw.) in die Batterie-Config uebernehmen.\"\"\"",
+        b + "    cfg = self.batteries.get(name)",
+        b + "    if cfg is None:",
+        b + "        return False",
+        b + "    new = {}",
+        b + "    for suffix, ckey, typ, lo, hi in LIMIT_PARAMS:",
+        b + "        gkey = name.upper() + suffix",
+        b + "        if gkey not in globals():",
+        b + "            continue",
+        b + "        try:",
+        b + "            val = typ(max(lo, min(hi, float(globals()[gkey]))))",
+        b + "        except (ValueError, TypeError):",
+        b + "            continue",
+        b + "        if typ is float:",
+        b + "            val = round(val, 2)",
+        b + "        if cfg.get(ckey) is None or typ(cfg.get(ckey)) != val:",
+        b + "            new[ckey] = val",
+        b + "    if not new:",
+        b + "        return False",
+        b + "    mn = new.get('min_soc', cfg.get('min_soc', 0))",
+        b + "    mx = new.get('max_soc', cfg.get('max_soc', 100))",
+        b + "    if int(mn) >= int(mx):",
+        b + "        if not initial and getattr(self, '_limit_warned', {}).get(name) != (mn, mx):",
+        b + "            self.log(f'[{name}] GRENZEN: Min-SoC {mn} % ist nicht kleiner als Max-SoC {mx} % - SoC-Werte bleiben', level='WARNING')",
+        b + "            self.__dict__.setdefault('_limit_warned', {})[name] = (mn, mx)",
+        b + "        new.pop('min_soc', None)",
+        b + "        new.pop('max_soc', None)",
+        b + "    cfg.update(new)",
+        b + "    if new and not initial:",
+        b + "        self.log(f\"[{name}] GRENZEN geaendert: {', '.join(f'{k}={v}' for k, v in new.items())}\")",
+        b + "    return bool(new)",
+        "",
+    ]
+    i = find(L, "self._sync_conn_params(name, initial=True)  # FIX 36")
+    L.insert(i + 1, ind(L[i]) + "self._sync_limit_params(name, initial=True)  # FIX 48")
+    i = find(L, "self._sync_conn_params(_n)  # FIX 36")
+    L.insert(i + 1, ind(L[i]) + "self._sync_limit_params(_n)  # FIX 48")
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix49_control(src):
+    """FIX 49: Energiezaehler (kWh) nur plausibel an HA geben - kein Ruecksprung, kein Riesensprung."""
+    if "FIX 49" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 48:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 49: Gesamt-Energiezaehler (kWh) werden nur plausibel an Home Assistant gegeben: kein Ruecksprung, "
+                                "kein Sprung groesser als physikalisch moeglich (z. B. vertauschte Modbus-Antworten). Ein abweichender "
+                                "Wert wird erst uebernommen, wenn er mind. 10 min stabil bleibt. Sonst zaehlte HA Hunderte kWh 'heute'.")
+    i = find(L, "def _set_ha_sensor(self, entity_id, value, unit=\"\", attrs=None):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _kwh_guard(self, eid, v):",
+        b + "    \"\"\"FIX 49: Rueckgabe des Werts, der an HA gehen darf, oder None (verwerfen).\"\"\"",
+        b + "    now = time.time()",
+        b + "    if v < 0:",
+        b + "        return None",
+        b + "    last = self.__dict__.setdefault('_kwh_last', {})",
+        b + "    pend = self.__dict__.setdefault('_kwh_pend', {})",
+        b + "    if eid not in last:",
+        b + "        try:",
+        b + "            cur = float(self.get_state(eid))",
+        b + "        except Exception:",
+        b + "            cur = None",
+        b + "        if cur is None or cur <= 0 or cur != cur:",
+        b + "            last[eid] = (v, now)",
+        b + "            return v",
+        b + "        last[eid] = (cur, now)",
+        b + "    lv, lt = last[eid]",
+        b + "    max_up = 0.05 + max(15.0, now - lt) * 12.0 / 3600.0  # hoechstens 12 kW seit dem letzten guten Wert",
+        b + "    if lv - 0.05 <= v <= lv + max_up:",
+        b + "        pend.pop(eid, None)",
+        b + "        v = max(v, lv)",
+        b + "        last[eid] = (v, now)",
+        b + "        return v",
+        b + "    pv = pend.get(eid)",
+        b + "    if pv and pv[0] - 0.05 <= v <= pv[0] + 0.05 + (now - pv[1]) * 12.0 / 3600.0:",
+        b + "        if now - pv[1] >= 600 and pv[2] >= 4:",
+        b + "            self.log(f'ENERGIE: {eid} neuer Zaehlerstand {v} kWh uebernommen (vorher {lv} kWh, 10 min stabil)', level='WARNING')",
+        b + "            pend.pop(eid, None)",
+        b + "            last[eid] = (v, now)",
+        b + "            return v",
+        b + "        pend[eid] = (pv[0], pv[1], pv[2] + 1)",
+        b + "        return None",
+        b + "    self.log(f'ENERGIE: {eid} unplausibel {v} kWh (letzter guter Wert {lv} kWh) - verworfen', level='WARNING')",
+        b + "    pend[eid] = (v, now, 1)",
+        b + "    return None",
+        "",
+    ]
+    i = find(L, "def _set_ha_sensor(self, entity_id, value, unit=\"\", attrs=None):")
+    j = find(L, "if value is None:", i)
+    assert j - i < 5
+    k = j + 1
+    while L[k].strip() != "return":
+        k += 1
+    bb = ind(L[j])
+    L[k + 1:k + 1] = [
+        bb + "if str(unit).strip().lower() == 'kwh' and 'total' in str(entity_id):  # FIX 49 (nur Gesamtzaehler)",
+        bb + "    try:",
+        bb + "        value = self._kwh_guard(entity_id, float(value))",
+        bb + "    except (TypeError, ValueError):",
+        bb + "        return",
+        bb + "    if value is None:",
+        bb + "        return",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix48_mqtt(src):
+    if "LIMIT_FIELDS" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "CONN_FIELDS = [")
+    j = i
+    while L[j].strip() != "]":
+        j += 1
+    L[j + 1:j + 1] = [
+        "# FIX 48: Grenzwerte je Batterie (Suffix, Typ, Name, min, max, step, Einheit, Icon, Schluessel in BATTERY_CONFIG)",
+        "LIMIT_FIELDS = [",
+        '    ("_MAX_CHARGE_W", "number", "max. Ladeleistung", 0, 10000, 50, "W", "mdi:battery-arrow-up", "max_charge_w"),',
+        '    ("_MAX_DISCHARGE_W", "number", "max. Entladeleistung", 0, 10000, 50, "W", "mdi:battery-arrow-down", "max_discharge_w"),',
+        '    ("_MIN_SOC", "number", "Min-SoC", 0, 50, 1, "%", "mdi:battery-10", "min_soc"),',
+        '    ("_MAX_SOC", "number", "Max-SoC", 50, 100, 1, "%", "mdi:battery", "max_soc"),',
+        '    ("_CAPACITY_KWH", "number", "Kapazitaet", 0.5, 50, 0.1, "kWh", "mdi:battery-high", "capacity_kwh"),',
+        "]",
+    ]
+    i = find(L, 'params.insert(k, (pkey, ftyp, f"Venus {idx} {flabel}", flo, fhi, fstep, None, ficon, "config"))')
+    b = ind(L[i])  # Ebene innerhalb der CONN_FIELDS-Schleife
+    ob = b[:-4]
+    L[i + 2:i + 2] = [
+        ob + "# FIX 48: Grenzwerte je Batterie",
+        ob + "for suffix, ftyp, flabel, flo, fhi, fstep, funit, ficon, fsrc in LIMIT_FIELDS:",
+        ob + "    pkey = n.upper() + suffix",
+        ob + "    if pkey not in self.g:",
+        ob + "        v = ((self.g.get('BATTERY_CONFIG') or {}).get(n) or {}).get(fsrc)",
+        ob + "        if v is None:",
+        ob + "            continue",
+        ob + "        self.g[pkey] = round(float(v), 2) if isinstance(fstep, float) else int(round(float(v)))",
+        ob + "    params.insert(k, (pkey, ftyp, f'Venus {idx} {flabel}', flo, fhi, fstep, funit, ficon, 'config'))",
+        ob + "    k += 1",
+    ]
+    assert L[i + 1].strip() == "k += 1", L[i + 1]
+    i = find(L, "for _sfx, _t, *_r in CONN_FIELDS:  # FIX 36")
+    L[i] = L[i].replace("in CONN_FIELDS:  # FIX 36", "in CONN_FIELDS + LIMIT_FIELDS:  # FIX 36/48")
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix48_dashboard(cfg):
+    """FIX 48: je Venus-Faltbereich Abschnitt 'Grenzwerte' + Hilfetext."""
+    if re.search(r"marstek_battery\d+_max_charge_w", json.dumps(cfg)):
+        return cfg
+    n_done = 0
+    for v in cfg.get("views", []):
+        if v.get("path") != "konfiguration":
+            continue
+        for c in (v.get("sections") or [{}])[0].get("cards", []):
+            for r in c.get("entities") or []:
+                lab = str(((r.get("head") or {}).get("label")) or "") if isinstance(r, dict) else ""
+                if r.get("type") == "custom:fold-entity-row" if isinstance(r, dict) else False:
+                    m = re.match(r"^Venus (\d+)$", lab)
+                    if m and any("_api_port" in str(e.get("entity", "")) for e in r.get("entities", [])):
+                        n = m.group(1)
+                        r["entities"] += [{"type": "section", "label": "Grenzwerte"}] + [
+                            {"entity": f"number.marstek_battery{n}_{k}", "name": nm} for k, nm in LIMIT_ROWS]
+                        n_done += 1
+            if c.get("type") == "markdown" and "Verbindung (IP-Adressen und Ports): Was bedeutet das?" in c.get("content", ""):
+                a = "\n</details>"
+                assert c["content"].rstrip().endswith("</details>")
+                c["content"] = c["content"].rstrip()[:-len("</details>")].rstrip() + LIMIT_HELP_MD + "\n</details>"
+        break
+    assert n_done >= 1, "keine Venus-Faltbereiche gefunden"
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -790,12 +1004,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))), ("pv_mqtt.py", lambda t: fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))),
+    for fn, f in (("pv_control.py", lambda t: fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))), ("pv_mqtt.py", lambda t: fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))),
                   ("pv_config.py", fix40_config)):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -809,12 +1023,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))
+       fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))
     wr(os.path.join(dst, "pv_config.py"), fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))
+    cfg = fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

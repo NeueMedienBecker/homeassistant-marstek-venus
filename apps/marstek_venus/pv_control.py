@@ -63,6 +63,8 @@ Aenderungen:
 - FIX 45: BMS-Pflege laedt nur mit dem PV-Ueberschuss, der gerade da ist (pausiert bei Wolken/nachts, nach BMS_CARE_PV_WAIT_H ohne Abschluss mit voller Leistung); geregelte Batterien nehmen der BMS-Batterie den Ueberschuss nicht weg und entladen nicht fuer sie.
 - FIX 46: Netz-Zaehler (Sensor, Vorzeichen) und ein zweiter Speicher (Entlade-/Ladeleistung, PV) sind im Dashboard einstellbar (GRID_SENSOR, GRID_SENSOR_INVERT, EXT_STORAGE_*_SENSOR, EXT_PV_SENSOR); BMS-Pflege: 'max. Warten auf Sonne' zaehlt ab Faelligkeit, danach wird ohne PV durchgeladen.
 - FIX 47: 'STOP wenn Zaehlerwert aelter als' (METER_MAX_AGE_S) ist im Dashboard einstellbar; sensor.marstek_meter_info zeigt Alter des Zaehlerwerts, typischen Abstand neuer Werte, STOPs der letzten 24 h und einen Vorschlag fuer die Wartezeit.
+- FIX 48: Grenzwerte je Batterie (max. Lade-/Entladeleistung, Min-/Max-SoC, Kapazitaet) im Dashboard aenderbar (BATTERYn_MAX_CHARGE_W, _MAX_DISCHARGE_W, _MIN_SOC, _MAX_SOC, _CAPACITY_KWH); ohne Treiber-Neuaufbau.
+- FIX 49: Gesamt-Energiezaehler (kWh) werden nur plausibel an Home Assistant gegeben: kein Ruecksprung, kein Sprung groesser als physikalisch moeglich (z. B. vertauschte Modbus-Antworten). Ein abweichender Wert wird erst uebernommen, wenn er mind. 10 min stabil bleibt. Sonst zaehlte HA Hunderte kWh 'heute'.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -83,7 +85,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.16"  # FIX 39
+PV_CONTROL_VERSION = "2.0.17"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -150,6 +152,14 @@ CONN_PARAMS = (
     ("_MODBUS_UNIT", "unit", int),
     ("_API_HOST", "api_host", str),
     ("_API_PORT", "api_port", int),
+)
+# FIX 48: Grenzwerte je Batterie aus dem Dashboard -> Schluessel in BATTERY_CONFIG
+LIMIT_PARAMS = (
+    ("_MAX_CHARGE_W", "max_charge_w", int, 0, 10000),
+    ("_MAX_DISCHARGE_W", "max_discharge_w", int, 0, 10000),
+    ("_MIN_SOC", "min_soc", int, 0, 50),
+    ("_MAX_SOC", "max_soc", int, 50, 100),
+    ("_CAPACITY_KWH", "capacity_kwh", float, 0.5, 50),
 )
 
 # Defaults fuer neue API-Diagnose-Variablen (Rueckwaertskompatibilitaet)
@@ -1146,11 +1156,54 @@ class PVControlApp(Hass):
         return (f"sensor.{HA_EXPORT_PREFIX}_{idx}_{key}" if idx
                 else f"sensor.{HA_EXPORT_PREFIX}_{battery_name}_{key}")
 
+    def _kwh_guard(self, eid, v):
+        """FIX 49: Rueckgabe des Werts, der an HA gehen darf, oder None (verwerfen)."""
+        now = time.time()
+        if v < 0:
+            return None
+        last = self.__dict__.setdefault('_kwh_last', {})
+        pend = self.__dict__.setdefault('_kwh_pend', {})
+        if eid not in last:
+            try:
+                cur = float(self.get_state(eid))
+            except Exception:
+                cur = None
+            if cur is None or cur <= 0 or cur != cur:
+                last[eid] = (v, now)
+                return v
+            last[eid] = (cur, now)
+        lv, lt = last[eid]
+        max_up = 0.05 + max(15.0, now - lt) * 12.0 / 3600.0  # hoechstens 12 kW seit dem letzten guten Wert
+        if lv - 0.05 <= v <= lv + max_up:
+            pend.pop(eid, None)
+            v = max(v, lv)
+            last[eid] = (v, now)
+            return v
+        pv = pend.get(eid)
+        if pv and pv[0] - 0.05 <= v <= pv[0] + 0.05 + (now - pv[1]) * 12.0 / 3600.0:
+            if now - pv[1] >= 600 and pv[2] >= 4:
+                self.log(f'ENERGIE: {eid} neuer Zaehlerstand {v} kWh uebernommen (vorher {lv} kWh, 10 min stabil)', level='WARNING')
+                pend.pop(eid, None)
+                last[eid] = (v, now)
+                return v
+            pend[eid] = (pv[0], pv[1], pv[2] + 1)
+            return None
+        self.log(f'ENERGIE: {eid} unplausibel {v} kWh (letzter guter Wert {lv} kWh) - verworfen', level='WARNING')
+        pend[eid] = (v, now, 1)
+        return None
+
     def _set_ha_sensor(self, entity_id, value, unit="", attrs=None):
         if not HA_EXPORT_ENABLE:
             return
         if value is None:
             return
+        if str(unit).strip().lower() == 'kwh' and 'total' in str(entity_id):  # FIX 49 (nur Gesamtzaehler)
+            try:
+                value = self._kwh_guard(entity_id, float(value))
+            except (TypeError, ValueError):
+                return
+            if value is None:
+                return
         try:
             if isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
                 return
@@ -1509,6 +1562,39 @@ class PVControlApp(Hass):
                 self.error(f"[{name}] INIT-CONTROL nach Treiberwechsel: Fehler: {ex}")
         self._export_driver_state(name)
 
+    def _sync_limit_params(self, name, initial=False):
+        """FIX 48: Grenzwerte aus dem Dashboard (BATTERYn_MAX_CHARGE_W usw.) in die Batterie-Config uebernehmen."""
+        cfg = self.batteries.get(name)
+        if cfg is None:
+            return False
+        new = {}
+        for suffix, ckey, typ, lo, hi in LIMIT_PARAMS:
+            gkey = name.upper() + suffix
+            if gkey not in globals():
+                continue
+            try:
+                val = typ(max(lo, min(hi, float(globals()[gkey]))))
+            except (ValueError, TypeError):
+                continue
+            if typ is float:
+                val = round(val, 2)
+            if cfg.get(ckey) is None or typ(cfg.get(ckey)) != val:
+                new[ckey] = val
+        if not new:
+            return False
+        mn = new.get('min_soc', cfg.get('min_soc', 0))
+        mx = new.get('max_soc', cfg.get('max_soc', 100))
+        if int(mn) >= int(mx):
+            if not initial and getattr(self, '_limit_warned', {}).get(name) != (mn, mx):
+                self.log(f'[{name}] GRENZEN: Min-SoC {mn} % ist nicht kleiner als Max-SoC {mx} % - SoC-Werte bleiben', level='WARNING')
+                self.__dict__.setdefault('_limit_warned', {})[name] = (mn, mx)
+            new.pop('min_soc', None)
+            new.pop('max_soc', None)
+        cfg.update(new)
+        if new and not initial:
+            self.log(f"[{name}] GRENZEN geaendert: {', '.join(f'{k}={v}' for k, v in new.items())}")
+        return bool(new)
+
     def _sync_conn_params(self, name, initial=False):
         """FIX 36: Verbindungsdaten aus dem Dashboard (BATTERYn_MODBUS_HOST/_PORT/_UNIT, _API_HOST/_API_PORT)
         in die Batterie-Config uebernehmen. Bei Aenderung im Betrieb wird der Treiber neu aufgebaut.
@@ -1740,6 +1826,7 @@ class PVControlApp(Hass):
         self._drivers = {}
         for name in self.batteries:
             self._sync_conn_params(name, initial=True)  # FIX 36
+            self._sync_limit_params(name, initial=True)  # FIX 48
             self._sync_comm_choice(name, initial=True)
 
         driver_info = {n: type(d).__name__ for n, d in self._drivers.items()}
@@ -2526,6 +2613,7 @@ class PVControlApp(Hass):
             try:
                 for _n in list(self.batteries.keys()):
                     self._sync_conn_params(_n)  # FIX 36
+                    self._sync_limit_params(_n)  # FIX 48
                     self._sync_comm_choice(_n)
             except Exception as e:
                 self.error(f"ANBINDUNG: Umschalten fehlgeschlagen: {e}")

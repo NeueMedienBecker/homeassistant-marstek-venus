@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.16",
+    "sw_version": "2.0.17",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -66,6 +66,14 @@ CONN_FIELDS = [
     ("_MODBUS_UNIT", "number", "Modbus Slave-ID", 1, 247, 1, "mdi:numeric", "unit"),
     ("_API_HOST", "text", "WLAN-IP Batterie (API)", None, None, None, "mdi:wifi", "api_host"),
     ("_API_PORT", "number", "API UDP-Port", 1, 65535, 1, "mdi:numeric", "api_port"),
+]
+# FIX 48: Grenzwerte je Batterie (Suffix, Typ, Name, min, max, step, Einheit, Icon, Schluessel in BATTERY_CONFIG)
+LIMIT_FIELDS = [
+    ("_MAX_CHARGE_W", "number", "max. Ladeleistung", 0, 10000, 50, "W", "mdi:battery-arrow-up", "max_charge_w"),
+    ("_MAX_DISCHARGE_W", "number", "max. Entladeleistung", 0, 10000, 50, "W", "mdi:battery-arrow-down", "max_discharge_w"),
+    ("_MIN_SOC", "number", "Min-SoC", 0, 50, 1, "%", "mdi:battery-10", "min_soc"),
+    ("_MAX_SOC", "number", "Max-SoC", 50, 100, 1, "%", "mdi:battery", "max_soc"),
+    ("_CAPACITY_KWH", "number", "Kapazitaet", 0.5, 50, 0.1, "kWh", "mdi:battery-high", "capacity_kwh"),
 ]
 
 # (Key in pv_config, Typ, Name, min, max, step, Einheit, Icon, entity_category)
@@ -221,6 +229,16 @@ class ParamBridge:
                 if pkey not in self.g:
                     self.g[pkey] = self._conn_default(n, fsrc, ftyp)
                 params.insert(k, (pkey, ftyp, f"Venus {idx} {flabel}", flo, fhi, fstep, None, ficon, "config"))
+                k += 1
+            # FIX 48: Grenzwerte je Batterie
+            for suffix, ftyp, flabel, flo, fhi, fstep, funit, ficon, fsrc in LIMIT_FIELDS:
+                pkey = n.upper() + suffix
+                if pkey not in self.g:
+                    v = ((self.g.get('BATTERY_CONFIG') or {}).get(n) or {}).get(fsrc)
+                    if v is None:
+                        continue
+                    self.g[pkey] = round(float(v), 2) if isinstance(fstep, float) else int(round(float(v)))
+                params.insert(k, (pkey, ftyp, f'Venus {idx} {flabel}', flo, fhi, fstep, funit, ficon, 'config'))
                 k += 1
         self.params = [p for p in params if p[0] in self.g]
         self.spec = {p[0]: p for p in self.params}
@@ -574,7 +592,7 @@ class ParamBridge:
             if k not in present:
                 client.publish(f"{DISCOVERY}/switch/{BASE}/{k.lower()}/config", "", qos=1, retain=True)
                 client.publish(f"{DISCOVERY}/select/{BASE}/battery{i}_comm/config", "", qos=1, retain=True)  # FIX 31
-                for _sfx, _t, *_r in CONN_FIELDS:  # FIX 36
+                for _sfx, _t, *_r in CONN_FIELDS + LIMIT_FIELDS:  # FIX 36/48
                     client.publish(f"{DISCOVERY}/{_t}/{BASE}/battery{i}{_sfx.lower()}/config", "", qos=1, retain=True)
 
         for key, name, icon, cat in BUTTONS:

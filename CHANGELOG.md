@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.17 (2026-10-14)
+
+### Neu
+- **Grenzwerte je Batterie im Dashboard**: max. Ladeleistung, max. Entladeleistung, Min-SoC, Max-SoC und Kapazitaet jeder Venus sind unter Konfiguration -> Hauptschalter & Batterien -> Venus X -> Grenzwerte einstellbar (vorher nur in pv_config.py). Aenderungen wirken ab dem naechsten Regelzyklus, die Verbindung wird nicht neu aufgebaut.
+
+### Behoben
+- **Energie 'heute' mit Hunderten kWh**: Kam vom Akku kurz ein falscher Gesamtzaehler (z. B. der Lade- statt der Entladezaehler, etwa nach einer vertauschten Modbus-Antwort), zaehlte Home Assistant die Differenz und den Ruecksprung als Verbrauch. Gesamtzaehler werden jetzt nur noch plausibel weitergegeben: kein Ruecksprung, kein Sprung groesser als physikalisch moeglich; ein abweichender Wert wird erst nach 10 min Stabilitaet uebernommen.
+
 ## 2.0.16 (2026-10-14)
 
 ### Neu
