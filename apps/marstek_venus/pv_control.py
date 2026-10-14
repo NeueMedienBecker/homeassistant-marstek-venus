@@ -86,7 +86,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.20"  # FIX 39
+PV_CONTROL_VERSION = "2.0.21"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1206,7 +1206,7 @@ class PVControlApp(Hass):
             lim = int(globals().get('BMS_CARE_CELL_DELTA_MV', 100) or 0)
             fresh = bool(dl) and time.time() - dl[1] <= 900
             if fresh:
-                state = dl[0]
+                state = str(dl[0])
                 if self._cell_early(name):
                     status = 'hoch - BMS-Pflege wird vorgezogen (sobald PV-Ueberschuss da ist)'
                 elif c.get('high_since'):
@@ -2050,7 +2050,7 @@ class PVControlApp(Hass):
                 status = f'OK - Vorschlag: Wartezeit auf {sug} s stellen'
             else:
                 status = 'OK'
-            self.set_state('sensor.marstek_meter_info', state=(int(round(age)) if age is not None else 'unknown'), attributes={
+            self.set_state('sensor.marstek_meter_info', state=(str(int(round(age))) if age is not None else 'unknown'), attributes={
                 'friendly_name': 'Zaehler: Alter des letzten Werts', 'unit_of_measurement': 's',
                 'icon': 'mdi:timer-outline', 'status': status, 'avg_interval_s': avg, 'max_gap_s': mx,
                 'stop_after_s': ma, 'stops_24h': len(st), 'suggested_s': sug, 'samples': len(iv),

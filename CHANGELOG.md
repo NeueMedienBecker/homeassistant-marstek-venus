@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.21 (2026-10-14)
+
+### Behoben
+- Zaehler-Info und Zell-Unterschied: Bei einem Wert von genau 0 (z. B. Zaehlerwert gerade erst gekommen) lehnte Home Assistant die Aktualisierung ab ('400 Bad Request' im AppDaemon-Log). Der Wert wird jetzt als Text uebergeben.
+
 ## 2.0.20 (2026-10-14)
 
 ### Behoben
