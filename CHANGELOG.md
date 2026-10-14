@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.19 (2026-10-14)
+
+### Behoben
+- **Geloeschte Batterie kam beim Update wieder**: Der Installer hat eine im Dashboard geloeschte Batterie beim naechsten Update wieder aktiviert, sobald er sie im Netz fand. Geloeschte Batterien bleiben jetzt geloescht (wieder anlegen nur bewusst im Dashboard).
+- **Doppelte Batterie nach IP-Wechsel**: Bekam eine Venus per DHCP eine neue WLAN-IP, legte der Installer sie als zusaetzliche Batterie an (zwei Eintraege fuer dasselbe Geraet). Jetzt vergleicht er die Energiezaehler mit den vorhandenen Batterien und traegt bei Gleichheit nur die neue IP nach - auch in den Dashboard-Werten.
+
 ## 2.0.18 (2026-10-14)
 
 ### Neu

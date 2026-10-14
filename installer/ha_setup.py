@@ -1527,6 +1527,57 @@ def ask_batteries(template_vals, found=None):
 # ---------------------------------------------------------------------------
 # Automatische Einrichtung (Standard bei Neuinstallation)
 # ---------------------------------------------------------------------------
+def api_call(ip, method, params, rid=11, port=30000):
+    """Open-API-Anfrage (JSON-RPC ueber UDP), Ergebnis-dict oder None."""
+    try:
+        s_ = _udp_socket()
+        s_.settimeout(1.5)
+        msg = json.dumps({"id": rid, "method": method, "params": params}).encode()
+        for _ in range(3):
+            s_.sendto(msg, (ip, int(port)))
+            try:
+                while True:
+                    pkt, src = s_.recvfrom(4096)
+                    if src[0] != ip:
+                        continue
+                    d = json.loads(pkt.decode("utf-8", errors="replace"))
+                    if d.get("id") == rid and isinstance(d.get("result"), dict):
+                        s_.close()
+                        return d["result"]
+            except socket.timeout:
+                time.sleep(1.1)
+        s_.close()
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def same_battery_by_energy(ip, bats, prefix="marstekvenus"):
+    """Gehoert die Batterie unter 'ip' zu einer schon eingetragenen Batterie (z. B. neue WLAN-IP per DHCP)?
+    Vergleich der Gesamt-Energiezaehler (API) mit den Sensoren in Home Assistant. Rueckgabe: Name oder None."""
+    st = api_call(ip, "ES.GetStatus", {"id": 0})
+    if not st:
+        return None
+    try:
+        rin, rout = float(st.get("total_grid_input_energy")), float(st.get("total_grid_output_energy"))
+    except (TypeError, ValueError):
+        return None
+    for name in bats:
+        vals = []
+        for k in ("total_charging_energy", "total_discharging_energy"):
+            try:
+                vals.append(float((core("GET", f"/states/sensor.{prefix}_{bat_index(name)}_{k}") or {}).get("state")))
+            except (ApiError, TypeError, ValueError):
+                vals.append(None)
+        if None in vals or vals[0] <= 1 or vals[1] <= 1:
+            continue
+        for sc in (0.001, 0.1, 0.01):
+            ci, co = rin * sc, rout * sc
+            if abs(ci - vals[0]) <= max(0.3, 0.003 * vals[0]) and abs(co - vals[1]) <= max(0.3, 0.003 * vals[1]):
+                return name
+    return None
+
+
 def api_get_mode(ip, port=30000):
     """ES.GetMode einer Batterie lesen (dict oder None)."""
     try:
@@ -1678,6 +1729,7 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
         return cfg_text, 0
     vals = config_values(cfg_text)
     cfg = dict(vals.get("BATTERY_CONFIG") or {})
+    prefix = str(vals.get("HA_EXPORT_PREFIX") or "marstekvenus")
     proto = dict(next(iter(cfg.values()), {}) or next(iter((template_vals.get("BATTERY_CONFIG") or {}).values()), {}))
     comm = {}
     # Dashboard-Verwaltung (pv_batteries.json): im Dashboard geloeschte Batterien stehen in "remove"
@@ -1691,15 +1743,32 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
         pass
     changed_bo = False
     n = max([bat_index(k) for k in list(cfg) + list(bo["add"]) + bo["remove"]] + [0])
+    added = 0
+    new_hosts = {}
     for d in found:
-        # im Dashboard geloeschte Batterie mit derselben IP -> einfach wieder aktivieren
+        # 1) dieselbe Batterie wie eine eingetragene, nur mit neuer WLAN-IP (DHCP) -> IP nachtragen, nicht neu anlegen
+        same = None
+        try:
+            same = same_battery_by_energy(d["ip"], [k for k in bats if k in cfg], prefix)
+        except Exception:
+            same = None
+        if same:
+            old_ip = str(cfg[same].get("api_host") or "")
+            cfg[same] = dict(cfg[same], api_host=d["ip"])
+            new_hosts[same] = d["ip"]
+            ok(L(f"Venus {bat_index(same)}: WLAN-IP hat sich geaendert ({old_ip or '-'} -> {d['ip']}) - "
+                 f"dieselbe Batterie (gleiche Energiezaehler), es wird KEINE neue angelegt",
+                 f"Venus {bat_index(same)}: WLAN IP changed ({old_ip or '-'} -> {d['ip']}) - same battery "
+                 f"(same energy counters), NO new battery is added"))
+            continue
+        # 2) im Dashboard geloeschte Batterie -> bleibt geloescht (nie automatisch wieder anlegen)
         old = next((k for k in bo["remove"] if (cfg.get(k) or bo["add"].get(k) or {}).get("api_host") == d["ip"]), None)
         if old:
-            bo["remove"].remove(old)
-            changed_bo = True
-            ok(L(f"Venus {bat_index(old)} wieder aktiviert: {d['ip']}  {d['device']}  FW {d['ver']}",
-                 f"Venus {bat_index(old)} re-enabled: {d['ip']}  {d['device']}  FW {d['ver']}"))
+            ok(L(f"{d['ip']}: Venus {bat_index(old)} wurde im Dashboard geloescht - wird nicht wieder angelegt "
+                 f"(wieder anlegen: Dashboard -> Verwaltung -> Neue Batterie anlegen)",
+                 f"{d['ip']}: Venus {bat_index(old)} was deleted in the dashboard - not added again"))
             continue
+        added += 1
         n += 1
         b = dict(proto)
         b.update({"enabled": True, "comm_mode": "api", "modbus_host": "", "api_host": d["ip"], "port": 502,
@@ -1711,7 +1780,29 @@ def auto_add_batteries(cfg_text, app_dir, template_vals):
     if changed_bo and not DRY:
         with open(bfile, "w", encoding="utf-8") as f:
             json.dump(bo, f, indent=2)
-    return config_set(cfg_text, dict(BATTERY_CONFIG=cfg, **comm)), len(found)
+    extra = {}
+    if new_hosts:
+        # auch Dashboard-Werte bzw. fest uebernommene Werte der IP nachziehen, sonst gilt die alte IP weiter
+        for name, ip in new_hosts.items():
+            k = f"BATTERY{bat_index(name)}_API_HOST"
+            if k in vals:
+                extra[k] = ip
+        op = os.path.join(app_dir or "", "pv_mqtt_overrides.json")
+        try:
+            with open(op, encoding="utf-8") as f:
+                ov = json.load(f) or {}
+            ch = False
+            for name, ip in new_hosts.items():
+                k = f"BATTERY{bat_index(name)}_API_HOST"
+                if k in ov and ov[k] != ip:
+                    ov[k] = ip
+                    ch = True
+            if ch and not DRY:
+                backup_file(op, "vor_ip_wechsel")
+                write_file(op, json.dumps(ov, indent=2))
+        except (OSError, ValueError):
+            pass
+    return config_set(cfg_text, dict(BATTERY_CONFIG=cfg, **comm, **extra)), added
 
 
 
