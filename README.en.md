@@ -96,6 +96,7 @@ replaced if you confirm.
 | Option | Effect |
 |---|---|
 | --fresh | fresh setup: delete batteries, meter and dashboard values (with backup) |
+| --diag | troubleshooting: creates a report to share (no passwords), changes nothing |
 | --meter | pick the grid meter again only (e.g. after setting up the meter) |
 | --reconfigure | ask batteries and grid meter again (e.g. RS485 adapters, other meter) |
 | --ask | new installation with all questions instead of automatic |
@@ -138,7 +139,8 @@ The meter sign is inverted: run the installer with *--meter* and answer the sign
 | Batteries charge when they should discharge | meter sign wrong → run the installer with --reconfigure and answer the sign question with "no" |
 | Configuration page shows red boxes | the *fold-entity-row* extension is missing → run the installer with --dashboard or install it via HACS |
 | Dashboard shows "Beobachtungsmodus" | intended while another control runs or the meter is missing – then switch off "Nur beobachten" under Konfiguration → Hauptschalter & Batterien |
-| Anything else | Settings → Apps (Add-ons) → AppDaemon → **Log** |
+| Many fields show "Entity not found" | switches and settings come via MQTT – usually the MQTT integration is missing or the MQTT password does not match. Run the normal install command again; if that does not help, create a report with --diag |
+| Anything else | run the installer with **--diag** and send the report, or Settings → Apps (Add-ons) → AppDaemon → **Log** |
 
 ---
 

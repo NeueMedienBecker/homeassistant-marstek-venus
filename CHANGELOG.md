@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.13 (2026-10-14)
+
+### Neu
+- Installer-Option **--diag** (Fehlersuche): prueft Mosquitto, AppDaemon, MQTT-Zugang, MQTT-Integration, Steuer-Entitaeten und die Protokolle, nennt gefundene Probleme in einfachen Worten und speichert einen Bericht ohne Passwoerter im Home-Assistant-Ordner. Veraendert nichts.
+
 ## 2.0.12 (2026-10-13)
 
 ### Neu

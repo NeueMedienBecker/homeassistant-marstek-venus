@@ -105,6 +105,7 @@ Sicherung im Ordner *backup* angelegt. Das Dashboard wird nur ersetzt, wenn du e
 | --yes | Update ohne Rückfragen |
 | --lang en | Installer auf Englisch |
 | --uninstall | Steuerung entfernen (mit Sicherung) |
+| --diag | Fehlersuche: erstellt einen Bericht zum Weitergeben (ohne Passwörter), verändert nichts |
 
 ---
 
@@ -153,7 +154,8 @@ Einfach den Installer ausführen. Die alte Datei bleibt liegen, bitte den alten 
 | Batterien laden, wenn sie entladen sollten | Vorzeichen des Zählers falsch → Installer mit --reconfigure starten und die Vorzeichen-Frage mit „nein" beantworten |
 | Konfigurationsseite zeigt rote Kästen | die Erweiterung *fold-entity-row* fehlt → Installer mit --dashboard erneut ausführen oder über HACS installieren |
 | Dashboard zeigt „Beobachtungsmodus" | gewollt, solange eine andere Steuerung läuft oder der Zähler fehlt – danach unter Konfiguration → Hauptschalter & Batterien „Nur beobachten" ausschalten |
-| Sonstiges | Einstellungen → Apps (Add-ons) → AppDaemon → **Protokoll** |
+| Viele Felder zeigen „Entität nicht gefunden“ | Schalter und Einstellungen kommen über MQTT – meist fehlt die MQTT-Integration oder das MQTT-Passwort passt nicht. Den normalen Installationsbefehl erneut ausführen; hilft das nicht, mit --diag einen Bericht erstellen |
+| Sonstiges | Installer mit **--diag** starten und den Bericht schicken, oder Einstellungen → Apps (Add-ons) → AppDaemon → **Protokoll** |
 
 ---
 

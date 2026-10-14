@@ -1864,6 +1864,245 @@ def check_environment():
                       f"Supervisor not reachable ({e}). The installer needs Home Assistant OS or Supervised."))
 
 
+# ---------------------------------------------------------------------------
+# Fehlersuche (--diag): liest nur, veraendert nichts
+# ---------------------------------------------------------------------------
+_ANSI = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+_HEX = re.compile(r"\b[0-9a-fA-F]{32,}\b")
+
+
+def _diag_mask(txt):
+    txt = _ANSI.sub("", str(txt))
+    txt = re.sub(r'("?(?:password|passwort|pass|token|secret)"?\s*[:=]\s*)("[^"]*"|\S+)', r"\1***", txt, flags=re.I)
+    return _HEX.sub("<id>", txt)
+
+
+def _diag_json(path):
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return None
+
+
+def _diag_logs(slug, lines, pattern, keep):
+    try:
+        txt = http("GET", f"{SUP}/addons/{slug}/logs?lines={int(lines)}", raw=True, timeout=60) or ""
+    except ApiError as e:
+        return [f"(Log nicht lesbar: {e})"], ""
+    rx = re.compile(pattern, re.I)
+    sel = [_ANSI.sub("", l).rstrip() for l in str(txt).splitlines() if rx.search(l)]
+    return sel[-keep:], str(txt)
+
+
+def do_diag(version):
+    out, problems = [], []
+
+    def line(t=""):
+        out.append(_diag_mask(t))
+        say(_diag_mask(t))
+
+    def sec(t):
+        line("")
+        line(f"== {t} ==")
+
+    def prob(t):
+        problems.append(t)
+
+    mosq_logins = []
+    line(f"Marstek Venus Steuerung - Fehlersuche ({time.strftime('%Y-%m-%d %H:%M:%S')}), Installer {version}")
+    sec("Home Assistant")
+    try:
+        ci = sup("GET", "/core/info") or {}
+        line(f"Home Assistant {ci.get('version')} | Supervisor {(sup('GET', '/supervisor/info') or {}).get('version')}")
+    except ApiError as e:
+        line(f"Supervisor-Info nicht lesbar: {e}")
+
+    sec("Add-ons (Apps)")
+    login = None
+    for slug, name in ((ADDON_MOSQUITTO, "Mosquitto"), (ADDON_APPDAEMON, "AppDaemon")):
+        info = addon_info(slug)
+        if not info:
+            line(f"{name}: NICHT installiert")
+            prob(f"{name} ist nicht installiert - den normalen Installationsbefehl ausfuehren.")
+            continue
+        line(f"{name}: {info.get('state')} | Version {info.get('version')} | Autostart {info.get('boot')}")
+        if info.get("state") != "started":
+            prob(f"{name} laeuft nicht (Status {info.get('state')}).")
+        opts = info.get("options") or {}
+        if slug == ADDON_MOSQUITTO:
+            users = [x.get("username") for x in (opts.get("logins") or [])]
+            line(f"Mosquitto-Benutzer: {', '.join(map(str, users)) or '-'}")
+            mosq_logins = opts.get("logins") or []
+        else:
+            line(f"AppDaemon python_packages: {opts.get('python_packages')}")
+            if "paho-mqtt" not in " ".join(map(str, opts.get("python_packages") or [])):
+                prob("AppDaemon: Python-Paket paho-mqtt fehlt - den normalen Installationsbefehl ausfuehren.")
+
+    sec("App-Dateien")
+    root = None
+    for p_ in AD_DIRS + tuple(os.path.join(b, "a0d7b954_appdaemon") for b in ("/app_configs", "/addon_configs")):
+        if os.path.isdir(os.path.join(p_, "apps")):
+            root = p_
+            break
+    app_dir = find_existing_app(os.path.join(root, "apps")) if root else None
+    if not app_dir:
+        line("Keine Installation gefunden.")
+        prob("Die Steuerung ist nicht installiert (App-Ordner fehlt).")
+    else:
+        line(f"Ordner: {app_dir}")
+        for fn in sorted(os.listdir(app_dir)):
+            fp = os.path.join(app_dir, fn)
+            if os.path.isfile(fp):
+                line(f"  {fn}  {os.path.getsize(fp)} B  {time.strftime('%Y-%m-%d %H:%M', time.localtime(os.path.getmtime(fp)))}")
+        try:
+            m = re.search(r'PV_CONTROL_VERSION = "([^"]+)"', read(os.path.join(app_dir, "pv_control.py")))
+            line(f"pv_control.py Version: {m.group(1) if m else '?'}")
+        except OSError:
+            pass
+        in_yaml = False
+        for dp, dn, fns in os.walk(os.path.join(root, "apps")):
+            dn[:] = [d for d in dn if d not in ("backup", "__pycache__")]
+            for fn_ in fns:
+                if fn_.endswith((".yaml", ".yml")):
+                    try:
+                        if re.search(r"^\s*module:\s*pv_control\s*$", read(os.path.join(dp, fn_)), re.M):
+                            in_yaml = True
+                    except OSError:
+                        pass
+        line(f"App in apps.yaml eingetragen (module: pv_control): {'ja' if in_yaml else 'NEIN'}")
+        if not in_yaml:
+            prob("apps.yaml enthaelt die App nicht - AppDaemon startet die Steuerung nicht.")
+
+        login = _diag_json(os.path.join(app_dir, "pv_mqtt_login.json"))
+        if not login:
+            line("pv_mqtt_login.json: FEHLT oder unlesbar")
+            prob("MQTT-Zugang (pv_mqtt_login.json) fehlt - ohne ihn gibt es keine Schalter im Dashboard.")
+        else:
+            line(f"pv_mqtt_login.json: host={login.get('host')} port={login.get('port')} user={login.get('user')} "
+                 f"Passwort {'gesetzt' if login.get('password') else 'LEER'}")
+            if login.get("user"):
+                mine = [x for x in mosq_logins if x.get("username") == login.get("user")]
+                if not mine:
+                    line(f"Mosquitto kennt den Benutzer '{login.get('user')}' NICHT")
+                    prob(f"Mosquitto kennt den MQTT-Benutzer '{login.get('user')}' nicht.")
+                else:
+                    same = mine[0].get("password") == login.get("password")
+                    line(f"Passwort in Mosquitto und pv_mqtt_login.json: {'gleich' if same else 'UNTERSCHIEDLICH'}")
+                    if not same:
+                        prob("Das MQTT-Passwort in Mosquitto passt nicht zu pv_mqtt_login.json.")
+
+        try:
+            vals = config_values(read(os.path.join(app_dir, "pv_config.py")))
+        except (OSError, ValueError, SyntaxError) as e:
+            vals = {}
+            line(f"pv_config.py nicht lesbar: {e}")
+            prob("pv_config.py ist beschaedigt oder nicht lesbar.")
+        ov = _diag_json(os.path.join(app_dir, "pv_mqtt_overrides.json")) or {}
+        sec("Einstellungen")
+        ps = vals.get("POWER_SENSOR") or {}
+        line(f"Netz-Zaehler (pv_config): {ps.get('entity')} invert={ps.get('invert')}")
+        for k in ("GRID_SENSOR", "GRID_SENSOR_INVERT", "EXT_STORAGE_DISCHARGE_SENSOR", "EXT_STORAGE_CHARGE_SENSOR",
+                  "EXT_PV_SENSOR", "READ_ONLY", "CONTROL_ENABLE", "INTERVAL"):
+            if k in vals or k in ov:
+                line(f"{k} = {ov.get(k, vals.get(k))}{'  (Dashboard)' if k in ov else ''}")
+        if ov.get("READ_ONLY", vals.get("READ_ONLY")):
+            prob("Beobachtungsmodus ist an - die Batterien bekommen keine Befehle.")
+        for n, b in sorted((vals.get("BATTERY_CONFIG") or {}).items()):
+            if isinstance(b, dict):
+                line(f"{n}: {b.get('comm_mode')} | Modbus {b.get('modbus_host') or b.get('host')}:{b.get('port')} "
+                     f"| WLAN {b.get('api_host')}:{b.get('api_port')} | aktiv={b.get('enabled', True)}")
+        line(f"Dashboard-Werte (pv_mqtt_overrides.json): {len(ov)}")
+
+    sec("Home Assistant: MQTT-Integration und Entitaeten")
+    cfg = ha_config_dir()
+    ce = _diag_json(os.path.join(cfg, ".storage", "core.config_entries"))
+    er = _diag_json(os.path.join(cfg, ".storage", "core.entity_registry"))
+    if ce is None:
+        line(f"{cfg}/.storage nicht lesbar - Integrationen nicht pruefbar")
+    else:
+        mq = [e for e in ((ce.get("data") or {}).get("entries") or []) if e.get("domain") == "mqtt"]
+        if not mq:
+            line("MQTT-Integration: NICHT eingerichtet")
+            prob("Die MQTT-Integration fehlt in Home Assistant - deshalb gibt es keine Schalter und Knoepfe.")
+        for e in mq:
+            d, o = dict(e.get("data") or {}), dict(e.get("options") or {})
+            disc = o.get("discovery", d.get("discovery", True))
+            line(f"MQTT-Integration: broker={d.get('broker')} port={d.get('port')} user={d.get('username')} "
+                 f"discovery={disc} deaktiviert={e.get('disabled_by')}")
+            if e.get("disabled_by"):
+                prob("Die MQTT-Integration ist deaktiviert.")
+            if disc is False:
+                prob("MQTT-Discovery ist ausgeschaltet - Einstellungen > Geraete & Dienste > MQTT > Konfigurieren > "
+                     "'Discovery aktivieren'.")
+            if login and str(d.get("broker") or "") not in ("core-mosquitto", "localhost", "127.0.0.1",
+                                                              str(login.get("host"))):
+                prob(f"Die MQTT-Integration zeigt auf einen anderen Broker ({d.get('broker')}) als die Steuerung "
+                     f"({login.get('host')}).")
+    if er is not None:
+        ents = (er.get("data") or {}).get("entities") or []
+        mine = [x for x in ents if str(x.get("unique_id") or "").startswith("marstek_ctrl_")]
+        dis = [x for x in mine if x.get("disabled_by")]
+        line(f"Steuer-Entitaeten (switch/number/button.marstek_*): {len(mine)}, davon deaktiviert: {len(dis)}")
+        for x in mine[:3]:
+            line(f"  z.B. {x.get('entity_id')}")
+        if not mine:
+            prob("In Home Assistant gibt es keine Steuer-Entitaeten - MQTT-Discovery ist nie angekommen.")
+        if dis:
+            prob(f"{len(dis)} Steuer-Entitaeten sind in Home Assistant deaktiviert.")
+        sens = [x for x in ents if str(x.get("entity_id") or "").startswith(("sensor.marstekvenus_", "sensor.pv_battery"))]
+        line(f"Batterie-Sensoren in der Registry: {len(sens)} (die meisten legt das Skript ohne Registry an)")
+
+    sec("AppDaemon-Log (MQTT, Fehler, Warnungen)")
+    sel, full = _diag_logs(ADDON_APPDAEMON, 4000, r"MQTT|Traceback|ERROR|WARNING|startet|Exception", 4000)
+    warns = {}
+    keep = []
+    for l in sel:
+        if " WARNING " in l and "MQTT" not in l:
+            k = re.sub(r"[0-9]+", "#", l.split(" WARNING ", 1)[1])[:90]
+            warns[k] = warns.get(k, 0) + 1
+            continue
+        keep.append(l)
+    for l in keep[-60:]:
+        line(l)
+    if warns:
+        line(f"-- Warnungen zusammengefasst ({sum(warns.values())} Zeilen, haeufigste zuerst):")
+        for k, n in sorted(warns.items(), key=lambda x: -x[1])[:12]:
+            line(f"   {n:5d} x {k}")
+    if re.search(r"Verbindung abgelehnt|Not authori[sz]ed|rc=5|rc=4", full, re.I):
+        prob("Die Steuerung wird von Mosquitto abgelehnt (Benutzer/Passwort).")
+    if re.search(r"No module named 'paho'|paho.* fehlt", full, re.I):
+        prob("paho-mqtt ist in AppDaemon nicht installiert.")
+    if re.search(r"pv_mqtt_login\.json fehlt", full, re.I):
+        prob("Die Steuerung meldet: pv_mqtt_login.json fehlt.")
+
+    sec("Mosquitto-Log")
+    sel, _ = _diag_logs(ADDON_MOSQUITTO, 1000, r"marstek|denied|not authori|error|refused", 30)
+    for l in sel:
+        line(l)
+
+    sec("Ergebnis")
+    if problems:
+        for t in problems:
+            line(f"!! {t}")
+        line("")
+        line("Tipp: Viele dieser Punkte behebt der normale Installationsbefehl (Update, Einstellungen bleiben).")
+    else:
+        line("Keine offensichtlichen Fehler gefunden. Bitte diesen Bericht an den Entwickler schicken.")
+
+    fn = os.path.join(ha_config_dir(), "marstek-diag-" + time.strftime("%Y%m%d_%H%M%S") + ".txt")
+    try:
+        with open(fn, "w", encoding="utf-8") as f:
+            f.write("\n".join(out) + "\n")
+        say()
+        ok(L(f"Bericht gespeichert: {fn} (ohne Passwoerter) - einfach den Text oben kopieren oder die Datei "
+             f"z. B. mit dem File Editor herunterladen.",
+             f"Report saved: {fn} (no passwords)."))
+    except OSError as e:
+        warn(f"Bericht nicht gespeichert: {e}")
+    return 0
+
+
 def do_uninstall():
     head(L("Deinstallation", "Uninstall"))
     root = appdaemon_root()
@@ -1909,11 +2148,15 @@ def main():
     ap.add_argument("--fresh", action="store_true", help="alles neu einrichten (alte Einstellungen loeschen, mit Sicherung)")
     ap.add_argument("--yes", action="store_true", help="alle Vorschlaege uebernehmen (Update ohne Rueckfragen)")
     ap.add_argument("--ask", action="store_true", help="Neuinstallation: alles einzeln abfragen statt automatisch")
+    ap.add_argument("--diag", action="store_true", help="Fehlersuche: Bericht erstellen, nichts veraendern")
     a = ap.parse_args()
     DRY, AUTO_YES = a.dry_run, a.yes
     version = read(VERSION_FILE).strip() if os.path.exists(VERSION_FILE) else "?"
 
     check_environment()
+    if a.diag:
+        LANG = a.lang or "de"
+        return do_diag(version)
     LANG = a.lang or detect_language()
     say(f"{C_HEAD}Marstek Venus Steuerung {version} - {L('Einrichtung', 'Setup')}{C_RST}")
     if DRY:
