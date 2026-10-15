@@ -1264,6 +1264,115 @@ def fix53_dashboard(cfg):
     return cfg
 
 
+def fix55_control(src):
+    """FIX 55: BMS-Zustand fuer das Dashboard (pausiert/wartet auf Sonne, ab wann aus dem Netz); set_state mit replace=True."""
+    if "FIX 55" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 53:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 55: BMS-Pflege zeigt im Dashboard, ob sie mit PV-Ueberschuss laedt, pausiert und auf Sonne wartet "
+                                "(mit Uhrzeit, ab wann aus dem Netz geladen wird) oder in der Haltephase ist.")
+    i = find(L, "self._bms_cmd(name, driver, 'pause', 0, 0, 0)")
+    L.insert(i, ind(L[i]) + "bms['pv_wait'], bms['from_grid'] = True, False  # FIX 55")
+    i = find(L, "ok = self._bms_cmd(name, driver, 'charge%d' % _w, 1, _w, 0)")
+    L.insert(i, ind(L[i]) + "bms['pv_wait'], bms['from_grid'] = False, _budget is None  # FIX 55")
+    i = find(L, "'status': ({'idle': 'Bereitschaft', 'charging': 'Vollladung laeuft (nur mit PV-Ueberschuss)', 'hold': 'Haltephase (voll)'}", startswith=True)
+    assert L[i + 1].strip() == ".get(bms.get('phase', 'idle'), bms.get('phase', 'idle'))),"
+    b = ind(L[i])
+    L[i:i + 2] = [b + "'status': self._bms_status_text(n, bms),  # FIX 55",
+                  b + "'grid_from': self._fmt_ts(self._bms_grid_from(bms)) if self._bms_grid_from(bms) else '',"]
+    i = find(L, "def _bms_next_due_ts(self, name):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _bms_grid_from(self, bms):",
+        b + "    \"\"\"FIX 55: ab wann eine faellige Vollladung ohne Sonne aus dem Netz laedt (0 = sofort/nie relevant).\"\"\"",
+        b + "    if not globals().get('BMS_CARE_REQUIRE_PV', True):",
+        b + "        return 0",
+        b + "    last = float(bms.get('last_full_ts') or 0)",
+        b + "    if last <= 0:",
+        b + "        return 0",
+        b + "    return last + FULL_CHARGE_INTERVAL_DAYS * 86400 + float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600",
+        "",
+        b + "def _bms_status_text(self, name, bms):",
+        b + "    \"\"\"FIX 55: Zustand der BMS-Pflege in Worten fuer das Dashboard.\"\"\"",
+        b + "    ph = bms.get('phase', 'idle')",
+        b + "    if ph == 'hold':",
+        b + "        return f\"Voll – Haltephase (Zellausgleich) bis {time.strftime('%H:%M', time.localtime(float(bms.get('holding_until') or 0)))} Uhr\"",
+        b + "    if ph != 'charging':",
+        b + "        return 'Bereitschaft'",
+        b + "    gf = self._bms_grid_from(bms)",
+        b + "    if bms.get('pv_wait'):",
+        b + "        t = 'Pausiert – wartet auf Sonne (PV-Überschuss).'",
+        b + "        if gf and gf > time.time():",
+        b + "            t += f\" Spätestens ab {time.strftime('%d.%m. %H:%M', time.localtime(gf))} Uhr lädt sie aus dem Netz.\"",
+        b + "        return t",
+        b + "    if bms.get('from_grid'):",
+        b + "        return 'Vollladung läuft aus dem Netz (Wartezeit auf Sonne abgelaufen)'",
+        b + "    return 'Vollladung läuft mit PV-Überschuss'",
+        "",
+    ]
+    # Attribute ersetzen statt mischen (sonst landen interne Felder wie last_changed/context in den Attributen)
+    for a, bnew in (
+        ('self.set_state(f"sensor.bms_{n}_phase", state=bms.get("phase", "idle"), attributes={',
+         'self.set_state(f"sensor.bms_{n}_phase", state=bms.get("phase", "idle"), replace=True, attributes={'),
+        ("self.set_state(entity_id, state=state, attributes=a)", "self.set_state(entity_id, state=state, replace=True, attributes=a)"),
+        ("self.set_state('sensor.marstek_meter_info', state=", "self.set_state('sensor.marstek_meter_info', replace=True, state="),
+        ("self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, attributes={",
+         "self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, replace=True, attributes={"),
+    ):
+        k = [j for j, x in enumerate(L) if a in x]
+        assert len(k) == 1, a
+        L[k[0]] = L[k[0]].replace(a, bnew)
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+BMS_BANNER_MD = ("{% for n in range(1, 9) %}{% set e = 'sensor.bms_battery' ~ n ~ '_phase' %}"
+                 "{% if states(e) in ['charging', 'hold'] %}**🔋 Venus {{ n }} – BMS-Pflege:** {{ state_attr(e, 'status') }}"
+                 "{% if state_attr(e, 'grid_from') and states(e) == 'charging' %}{% endif %}\n\n{% endif %}{% endfor %}")
+
+
+def fix55_dashboard(cfg):
+    """FIX 55: Batterien-Tab: Zeile 'BMS-Pflege Zustand'; Uebersicht: Hinweis, solange eine BMS-Pflege laeuft."""
+    if "BMS-Pflege Zustand" in json.dumps(cfg, ensure_ascii=False):
+        return cfg
+    hits = {"row": 0, "banner": 0}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("entities"), list):
+                new = []
+                for r in o["entities"]:
+                    new.append(r)
+                    if isinstance(r, dict) and r.get("type") == "attribute" and r.get("attribute") == "next_due" \
+                            and re.match(r"^sensor\.bms_battery\d+_phase$", r.get("entity") or ""):
+                        new.append({"type": "attribute", "entity": r["entity"], "attribute": "status",
+                                    "name": "BMS-Pflege Zustand", "icon": "mdi:information-outline"})
+                        hits["row"] += 1
+                o["entities"] = new
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+    walk(cfg)
+    banner = {"type": "conditional",
+              "conditions": [{"condition": "or", "conditions": [
+                  {"condition": "state", "entity": f"sensor.bms_battery{n}_phase", "state": ["charging", "hold"]}
+                  for n in range(1, 7)]}],
+              "card": {"type": "markdown", "content": BMS_BANNER_MD}}
+    for v in cfg.get("views", []):
+        secs = v.get("sections") or []
+        if v.get("path") == "uebersicht" and secs:
+            cards = secs[0].setdefault("cards", [])
+            pos = 1 if cards and cards[0].get("type") == "heading" else 0
+            cards.insert(pos, banner)
+            hits["banner"] += 1
+    assert hits["row"] >= 1 and hits["banner"] == 1, hits
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1526,12 +1635,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))), ("pv_mqtt.py", lambda t: fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))),
+    for fn, f in (("pv_control.py", lambda t: fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))), ("pv_mqtt.py", lambda t: fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))),
                   ("pv_config.py", lambda t: fix53_config(fix50_config(fix40_config(t))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -1545,12 +1654,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))
+       fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))))
     wr(os.path.join(dst, "pv_config.py"), fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))))
+    cfg = fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

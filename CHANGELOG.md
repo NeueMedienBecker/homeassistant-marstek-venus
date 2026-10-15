@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.23 (2026-10-15)
+
+### Neu
+- **BMS-Pflege: Zustand im Dashboard**: Im Tab Batterien steht je Venus 'BMS-Pflege Zustand', in der Uebersicht erscheint ein Hinweis, solange eine BMS-Pflege laeuft - z. B. 'Pausiert - wartet auf Sonne (PV-Ueberschuss). Spaetestens ab 16.10. 15:59 Uhr laedt sie aus dem Netz.', 'Vollladung laeuft mit PV-Ueberschuss', 'Vollladung laeuft aus dem Netz' oder 'Voll - Haltephase bis ...'.
+
+### Behoben
+- In den Attributen der Batterie-, BMS- und Info-Sensoren standen interne Zusatzdaten (last_changed, context). Die Attribute werden jetzt ersetzt statt gemischt.
+
 ## 2.0.22 (2026-10-14)
 
 ### Neu

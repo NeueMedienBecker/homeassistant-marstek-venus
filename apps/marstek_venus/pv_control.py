@@ -67,6 +67,7 @@ Aenderungen:
 - FIX 49: Gesamt-Energiezaehler (kWh) werden nur plausibel an Home Assistant gegeben: kein Ruecksprung, kein Sprung groesser als physikalisch moeglich (z. B. vertauschte Modbus-Antworten). Ein abweichender Wert wird erst uebernommen, wenn er mind. 10 min stabil bleibt. Sonst zaehlte HA Hunderte kWh 'heute'.
 - FIX 50: hoechste/niedrigste Zellspannung (Modbus 37007/37008) und Unterschied in mV je Batterie (sensor.marstekvenus_N_cell_voltage_delta, nur Modbus); liegt der Unterschied >= BMS_CARE_CELL_DELTA_MV laenger an, wird die BMS-Pflege vorgezogen (nur mit PV-Ueberschuss, fruehestens nach BMS_CARE_CELL_MIN_DAYS).
 - FIX 53: Vollladung bis 100 % (Standard); zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie >= 99 % zeigt und BMS_FULL_STALL_S lang trotz Ladebefehl < BMS_FULL_STALL_W aufnimmt.
+- FIX 55: BMS-Pflege zeigt im Dashboard, ob sie mit PV-Ueberschuss laedt, pausiert und auf Sonne wartet (mit Uhrzeit, ab wann aus dem Netz geladen wird) oder in der Haltephase ist.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -87,7 +88,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.22"  # FIX 39
+PV_CONTROL_VERSION = "2.0.23"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1219,7 +1220,7 @@ class PVControlApp(Hass):
                 status = ('nur mit Modbus-Anbindung verfuegbar' if isinstance(self._drivers.get(name), ApiDriver)
                           else 'noch keine Werte')
             idx = BATTERY_META.get(name, {}).get('idx', name)
-            self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, attributes={
+            self.set_state(self._ha_entity(name, 'cell_voltage_delta'), state=state, replace=True, attributes={
                 'friendly_name': f'MarstekVenus {idx} Cell Voltage Delta', 'unit_of_measurement': 'mV',
                 'icon': 'mdi:battery-heart-variant', 'status': status, 'limit_mv': lim,
                 'max_v': (c.get('max') or (None,))[0] if fresh else None,
@@ -1288,7 +1289,7 @@ class PVControlApp(Hass):
                 a["device_class"] = "energy"
                 a["state_class"]  = "total_increasing"
             state = str(value) if isinstance(value, (int, float)) else str(value).strip()
-            self.set_state(entity_id, state=state, attributes=a)
+            self.set_state(entity_id, state=state, replace=True, attributes=a)
         except Exception as e:
             self.error(f"HA-EXPORT: set_state failed for {entity_id}: {e}")
 
@@ -2051,7 +2052,7 @@ class PVControlApp(Hass):
                 status = f'OK - Vorschlag: Wartezeit auf {sug} s stellen'
             else:
                 status = 'OK'
-            self.set_state('sensor.marstek_meter_info', state=(str(int(round(age))) if age is not None else 'unknown'), attributes={
+            self.set_state('sensor.marstek_meter_info', replace=True, state=(str(int(round(age))) if age is not None else 'unknown'), attributes={
                 'friendly_name': 'Zaehler: Alter des letzten Werts', 'unit_of_measurement': 's',
                 'icon': 'mdi:timer-outline', 'status': status, 'avg_interval_s': avg, 'max_gap_s': mx,
                 'stop_after_s': ma, 'stops_24h': len(st), 'suggested_s': sug, 'samples': len(iv),
@@ -2314,6 +2315,32 @@ class PVControlApp(Hass):
             return True
         return False
 
+    def _bms_grid_from(self, bms):
+        """FIX 55: ab wann eine faellige Vollladung ohne Sonne aus dem Netz laedt (0 = sofort/nie relevant)."""
+        if not globals().get('BMS_CARE_REQUIRE_PV', True):
+            return 0
+        last = float(bms.get('last_full_ts') or 0)
+        if last <= 0:
+            return 0
+        return last + FULL_CHARGE_INTERVAL_DAYS * 86400 + float(globals().get('BMS_CARE_PV_WAIT_H', 48)) * 3600
+
+    def _bms_status_text(self, name, bms):
+        """FIX 55: Zustand der BMS-Pflege in Worten fuer das Dashboard."""
+        ph = bms.get('phase', 'idle')
+        if ph == 'hold':
+            return f"Voll – Haltephase (Zellausgleich) bis {time.strftime('%H:%M', time.localtime(float(bms.get('holding_until') or 0)))} Uhr"
+        if ph != 'charging':
+            return 'Bereitschaft'
+        gf = self._bms_grid_from(bms)
+        if bms.get('pv_wait'):
+            t = 'Pausiert – wartet auf Sonne (PV-Überschuss).'
+            if gf and gf > time.time():
+                t += f" Spätestens ab {time.strftime('%d.%m. %H:%M', time.localtime(gf))} Uhr lädt sie aus dem Netz."
+            return t
+        if bms.get('from_grid'):
+            return 'Vollladung läuft aus dem Netz (Wartezeit auf Sonne abgelaufen)'
+        return 'Vollladung läuft mit PV-Überschuss'
+
     def _bms_next_due_ts(self, name):
         if not ENABLE_BMS_CARE:
             return 0
@@ -2512,9 +2539,11 @@ class PVControlApp(Hass):
                 _w = int(min(float(BMS_FORCE_CHARGE_W), max(0.0, _budget)) // 50 * 50)
         if driver:
             if _w < int(globals().get('BMS_CARE_MIN_W', 150)):
+                bms['pv_wait'], bms['from_grid'] = True, False  # FIX 55
                 self._bms_cmd(name, driver, 'pause', 0, 0, 0)
                 verify_logs.append(f"{name}: BMS CHARGE pausiert - kein PV-Ueberschuss ({(_budget or 0):.0f}W), wartet")
             else:
+                bms['pv_wait'], bms['from_grid'] = False, _budget is None  # FIX 55
                 ok = self._bms_cmd(name, driver, 'charge%d' % _w, 1, _w, 0)
                 if ok:
                     verify_logs.append(f"{name}: BMS CHARGE set={_w}W" + (' (PV-Ueberschuss)' if _budget is not None else ' (Wartezeit auf Sonne abgelaufen - ohne PV)') + f" bis SoC>={FULL_CHARGE_SOC}%")
@@ -3088,7 +3117,7 @@ class PVControlApp(Hass):
                 for n in self.batteries.keys():
                     bms = self.bms_state.get(n, {})
                     try:
-                        self.set_state(f"sensor.bms_{n}_phase", state=bms.get("phase", "idle"), attributes={
+                        self.set_state(f"sensor.bms_{n}_phase", state=bms.get("phase", "idle"), replace=True, attributes={
                             "last_full":      self._fmt_ts(bms.get("last_full_ts")),
                             "hold_until":     self._fmt_ts(bms.get("holding_until")),
                             "cooldown_until": self._fmt_ts(bms.get("cooldown_until")),
@@ -3096,8 +3125,8 @@ class PVControlApp(Hass):
                             'next_due': (self._fmt_ts(float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400)
                                          if float(bms.get('last_full_ts') or 0) + FULL_CHARGE_INTERVAL_DAYS * 86400 > time.time()
                                          else 'faellig - wartet auf PV-Ueberschuss'),
-                            'status': ({'idle': 'Bereitschaft', 'charging': 'Vollladung laeuft (nur mit PV-Ueberschuss)', 'hold': 'Haltephase (voll)'}
-                                       .get(bms.get('phase', 'idle'), bms.get('phase', 'idle'))),
+                            'status': self._bms_status_text(n, bms),  # FIX 55
+                            'grid_from': self._fmt_ts(self._bms_grid_from(bms)) if self._bms_grid_from(bms) else '',
                         })
                     except Exception as e:
                         self.error(f"BMS-HA-SENSOR {n}: set_state fehlgeschlagen: {e}")
