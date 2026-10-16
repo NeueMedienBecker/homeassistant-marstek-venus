@@ -18,8 +18,8 @@ Everything else is set up in the included **"Marstek" dashboard** (the dashboard
 - **Zero export / grid balancing** – charge on surplus, discharge on import, with dead band and protection against constant switching
 - **Multiple batteries** – power is split by state of charge; with little PV power only one battery is charged (more efficient), the order rotates
 - **Two connection paths per battery** – Modbus *or* Wi-Fi API *or* "Modbus, otherwise API" / "API, otherwise Modbus". A battery that answers on neither path gets no power share
-- **SoC protection** – a battery stuck at its minimum for too long is gently recharged (preferably with sun)
-- **BMS care** – regular full charge for cell balancing, one battery after the other, only with PV surplus (pauses when clouds come or at night)
+- **SoC protection** – a battery stuck at its minimum for too long is gently recharged (preferably with sun); the waiting time is adjustable (0 = immediately)
+- **BMS care** – regular full charge for cell balancing, one battery after the other, preferably with PV surplus (pauses when clouds come or at night, from the grid after a maximum waiting time); the dashboard shows whether it is charging, waiting for sun or holding
 - **Safety** – implausible or stale meter values stop the batteries; main switch and switch per battery
 - **Dashboard** – overview with traffic lights, state of charge, power, energy *today / yesterday / this week*, all settings changeable live (no restart), add and delete batteries, save settings
 - **Firmware detection** – different Open API units per firmware (e.g. temperature, energy counters) are converted automatically
@@ -167,7 +167,13 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Cell voltages (Modbus only):** With a Modbus connection the *Batterien* tab shows the highest and lowest cell voltage and the difference in mV per Venus. If the difference stays above the limit (default 100 mV), the BMS care charge is started early - only with PV surplus. The WLAN API does not provide cell voltages.
 
-**Updates:** The control checks GitHub every 6 hours. If there is a new version, the *Übersicht* view shows a hint with all changes (also under *Settings → Updates*). Install it with the install command - all settings are kept.
+**BMS care status:** The *Batterien* tab shows "BMS-Pflege Zustand" per Venus, and the *Übersicht* view shows a hint while a full charge is running - e.g. waiting for sun and from when it will charge from the grid.
+
+**Switching off = back to Marstek:** If the main switch *Regelung aktiv* or *Venus X vom Script gesteuert* is turned off, the battery is stopped and handed back to Marstek (Modbus: RS485 control off, WLAN: Auto mode). It can then be operated in the Marstek app, e.g. charged manually. Turned on again = the script takes over again. Only let **one** program control a battery via Modbus (no second Modbus integration in parallel).
+
+**Emergency charge:** Under *Konfiguration → SoC-Schutz / Notladung* you can set how long a battery may stay below min SoC before it is recharged ("Wartezeit unter Min-SoC", 0 = immediately, default 24 h).
+
+**Updates:** The control checks GitHub every 6 hours. If there is a new version, the *Übersicht* view shows a hint with the version and the install command; the list of changes can be expanded there (also under *Settings → Updates*). Install it with the install command - all settings are kept.
 
 **Without the installer** (advanced): AppDaemon add-on with the Python packages *pymodbus==3.9.2* and
 *paho-mqtt*, copy the folder *apps/marstek_venus* into the AppDaemon apps folder, add to *apps.yaml*:

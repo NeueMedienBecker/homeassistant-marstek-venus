@@ -18,9 +18,9 @@ Alles Weitere stellst du bequem im mitgelieferten **Dashboard „Marstek"** ein.
 - **Nulleinspeisung / Netz-Ausgleich** – Laden bei Überschuss, Entladen bei Bezug, mit Totband und Schutz gegen ständiges Hin- und Herschalten
 - **Mehrere Batterien** – Leistung wird nach Ladestand verteilt; bei wenig PV-Leistung wird gezielt nur eine Batterie geladen (effizienter), die Reihenfolge wechselt
 - **Zwei Anbindungen je Batterie** – Modbus *oder* WLAN-API *oder* „Modbus, sonst API" bzw. „API, sonst Modbus". Antwortet eine Batterie auf keinem Weg, bekommt sie keine Leistung zugeteilt
-- **SoC-Schutz / Notladung** – hängt eine Batterie zu lange am Minimum, wird sie sanft nachgeladen (bevorzugt mit Sonne)
-- **BMS-Pflege** – regelmäßige Vollladung zum Zellausgleich, eine Batterie nach der anderen, nur mit PV-Überschuss (pausiert bei Wolken und nachts)
-- **Sicherheit** – unplausible oder veraltete Zählerwerte stoppen die Batterien; Hauptschalter und Schalter je Batterie
+- **SoC-Schutz / Notladung** – hängt eine Batterie zu lange am Minimum, wird sie sanft nachgeladen (bevorzugt mit Sonne); die Wartezeit ist einstellbar (0 = sofort)
+- **BMS-Pflege** – regelmäßige Vollladung zum Zellausgleich, eine Batterie nach der anderen, bevorzugt mit PV-Überschuss (pausiert bei Wolken und nachts, nach einer Höchstwartezeit auch aus dem Netz); das Dashboard zeigt, ob sie lädt, auf Sonne wartet oder in der Haltephase ist
+- **Sicherheit** – unplausible oder veraltete Zählerwerte stoppen die Batterien; Hauptschalter und Schalter je Batterie – ausgeschaltet geht die Batterie an die Marstek-App zurück
 - **Dashboard** – Übersicht mit Ampel, Ladestand, Leistung, Energie *heute / gestern / diese Woche*, alle Einstellungen live änderbar (ohne Neustart), Batterien anlegen und löschen, Einstellungen sichern
 - **Firmware-Erkennung** – unterschiedliche Einheiten der Open API je Firmware (z. B. Temperatur, Energiezähler) werden automatisch umgerechnet
 
@@ -182,7 +182,13 @@ stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, 
 
 **Zellspannungen (nur Modbus):** Bei Anbindung per Modbus zeigt der Tab *Batterien* je Venus die höchste und niedrigste Zellspannung und den Unterschied in mV. Liegt der Unterschied länger über der Grenze (Standard 100 mV), wird die BMS-Pflege vorgezogen – nur mit PV-Überschuss. Die WLAN-API liefert keine Zellspannungen.
 
-**Updates:** Die Steuerung prüft alle 6 Stunden, ob es auf GitHub eine neue Version gibt. Dann erscheint in der *Übersicht* ein Hinweis mit allen Neuerungen (zusätzlich unter *Einstellungen → Updates*). Eingespielt wird mit dem Installationsbefehl – alle Einstellungen bleiben erhalten.
+**BMS-Pflege-Zustand:** Im Tab *Batterien* steht je Venus „BMS-Pflege Zustand“, in der *Übersicht* erscheint ein Hinweis, solange eine Vollladung läuft – z. B. „Pausiert – wartet auf Sonne. Spätestens ab 16.10. 15:59 Uhr lädt sie aus dem Netz.“
+
+**Ausschalten = zurück an Marstek:** Wird der Hauptschalter *Regelung aktiv* oder *Venus X vom Script gesteuert* ausgeschaltet, wird die Batterie gestoppt und an Marstek zurückgegeben (Modbus: RS485-Steuerung aus, WLAN: Modus Automatik). Sie lässt sich dann in der Marstek-App bedienen, z. B. von Hand laden. Wieder an = das Script übernimmt wieder. Bitte pro Batterie nur **ein** Programm per Modbus steuern lassen (keine zweite Modbus-Integration parallel).
+
+**Notladung:** Unter *Konfiguration → SoC-Schutz / Notladung* lässt sich einstellen, wie lange eine Batterie unter dem Min-SoC sein darf, bevor nachgeladen wird („Wartezeit unter Min-SoC“, 0 = sofort, Standard 24 h).
+
+**Updates:** Die Steuerung prüft alle 6 Stunden, ob es auf GitHub eine neue Version gibt. Dann erscheint in der *Übersicht* ein Hinweis mit Version und Installationsbefehl; die Neuerungen lassen sich dort aufklappen (zusätzlich unter *Einstellungen → Updates*). Eingespielt wird mit dem Installationsbefehl – alle Einstellungen bleiben erhalten.
 
 **Ohne Installer** (für Erfahrene): AppDaemon-Add-on mit den Python-Paketen *pymodbus==3.9.2* und *paho-mqtt*,
 den Ordner *apps/marstek_venus* in den AppDaemon-apps-Ordner kopieren, in *apps.yaml* eintragen:

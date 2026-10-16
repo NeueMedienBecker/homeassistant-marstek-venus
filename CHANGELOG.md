@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.25 (2026-10-16)
+
+### Geaendert
+- **Update-Hinweis in der Uebersicht**: Der Hinweis mit Version, Link und Installationsbefehl bleibt sichtbar, die Liste der Neuerungen ist jetzt eingeklappt ('Was ist neu?' zum Aufklappen).
+- README (deutsch/englisch) auf den Stand von 2.0.23 bis 2.0.25 gebracht.
+
 ## 2.0.24 (2026-10-16)
 
 ### Neu

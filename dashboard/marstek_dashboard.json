@@ -93,7 +93,7 @@
         "cards": [
          {
           "type": "markdown",
-          "content": "### 🔔 Update verfügbar\nVersion **{{ state_attr('update.marstek_software','latest_version') }}** ist da (installiert: {{ state_attr('update.marstek_software','installed_version') }}). [Release auf GitHub]({{ state_attr('update.marstek_software','release_url') }})\n\n{{ state_attr('sensor.marstek_update_notes','notes') or '' }}\n\n**Einspielen:** im Terminal von Home Assistant denselben Befehl wie bei der Installation ausführen – alle Einstellungen bleiben erhalten, vorher werden Sicherungen angelegt:\n\n`curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash`"
+          "content": "### 🔔 Update verfügbar\nVersion **{{ state_attr('update.marstek_software','latest_version') }}** ist da (installiert: {{ state_attr('update.marstek_software','installed_version') }}). [Release auf GitHub]({{ state_attr('update.marstek_software','release_url') }})\n\n{% set _n = state_attr('sensor.marstek_update_notes','notes') %}{% if _n %}<details><summary>📋 <b>Was ist neu?</b> (zum Aufklappen antippen)</summary>\n\n{{ _n }}\n\n</details>\n\n{% endif %}**Einspielen:** im Terminal von Home Assistant denselben Befehl wie bei der Installation ausführen – alle Einstellungen bleiben erhalten, vorher werden Sicherungen angelegt:\n\n`curl -fsSL https://raw.githubusercontent.com/NeueMedienBecker/homeassistant-marstek-venus/main/install.sh | bash`"
          }
         ]
        }

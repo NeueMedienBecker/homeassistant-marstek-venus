@@ -1610,6 +1610,34 @@ def fix56_dashboard(cfg):
     return cfg
 
 
+UPD_NOTES_OLD = "{{ state_attr('sensor.marstek_update_notes','notes') or '' }}\n\n"
+UPD_NOTES_NEW = ("{% set _n = state_attr('sensor.marstek_update_notes','notes') %}{% if _n %}"
+                 "<details><summary>📋 <b>Was ist neu?</b> (zum Aufklappen antippen)</summary>\n\n"
+                 "{{ _n }}\n\n</details>\n\n{% endif %}")
+
+
+def fix57_dashboard(cfg):
+    """FIX 57: Update-Hinweis in der Uebersicht: Neuerungen eingeklappt (details), Rest bleibt sichtbar."""
+    if "<b>Was ist neu?</b>" in json.dumps(cfg, ensure_ascii=False):
+        return cfg
+    hits = {"n": 0}
+
+    def walk(o):
+        if isinstance(o, dict):
+            c = o.get("content")
+            if isinstance(c, str) and "### 🔔 Update verfügbar" in c and UPD_NOTES_OLD in c:
+                o["content"] = c.replace(UPD_NOTES_OLD, UPD_NOTES_NEW, 1)
+                hits["n"] += 1
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+    walk(cfg)
+    assert hits["n"] == 1, hits
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1877,7 +1905,7 @@ def apply_fix40_repo():
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -1896,7 +1924,7 @@ def main():
     wr(os.path.join(dst, "pv_config.py"), fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))))))
+    cfg = fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")
