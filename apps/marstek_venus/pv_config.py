@@ -624,7 +624,7 @@ SOC_SAFETY_TARGET_SOC = 20
 # Wartezeit in Stunden nach Unterschreitung von SOC_SAFETY_MIN_SOC
 # bevor die Notfall-Ladung eingeleitet wird.
 # Verhindert uebereifriges Laden bei kurzzeitigen Tiefentladungen.
-SOC_SAFETY_AFTER_HOURS = 48
+SOC_SAFETY_AFTER_HOURS = 24  # FIX 56: Standard 24 h (vorher 48 h), im Dashboard einstellbar, 0 = sofort
 
 # Ladeleistung waehrend der Notfall-Ladung in Watt.
 # Niedrig halten um das Netz wenig zu belasten.
@@ -804,6 +804,11 @@ CONTROL_ENABLED_VALUES = set(CONTROL_ENABLE_CANDIDATES)
 # 21947 = Modbus-Steuerung deaktiviert (Geraet im Standalone-Modus)
 # 0     = Register noch nicht beschrieben / nach Werksreset
 CONTROL_DISABLED_VALUES = {21947, 0}
+
+# FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> Batterie an Marstek zurueckgeben
+# (Modbus: Register 42000 = 21947, API: Modus Auto). Dann laesst sie sich wieder in der Marstek-App steuern.
+# False = altes Verhalten (nur einmal STOP, Steuerung bleibt beim Script).
+RELEASE_ON_DISABLE = True
 
 
 # =============================================================================

@@ -13,6 +13,7 @@ Schritte:
 """
 import argparse
 import json
+import re as _re
 import os
 import re
 import sys
@@ -1373,6 +1374,242 @@ def fix55_dashboard(cfg):
     return cfg
 
 
+def fix56_control(src):
+    """FIX 56: Haupt-/Batterieschalter aus -> Steuerung an Marstek zurueckgeben (Modbus 42000=21947, API Modus Auto)."""
+    if "FIX 56" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 55:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> die Batterie wird gestoppt und an Marstek "
+                                "zurueckgegeben (Modbus: RS485-Steuerung aus, API: Modus Auto) und nicht wieder uebernommen, "
+                                "bis der Schalter wieder an ist. Wartezeit der Notladung im Dashboard einstellbar.")
+    # Basisklasse: release_control + released
+    i = find(L, "class BatteryDriver:")
+    j = find(L, "def init_control(self):", i)
+    assert L[j + 2].strip() == "return 21930, False"
+    b = ind(L[j])
+    L[j + 3:j + 3] = [
+        "",
+        b + "released = False  # FIX 56: True = Steuerung an Marstek zurueckgegeben",
+        "",
+        b + "def release_control(self):",
+        b + "    \"\"\"FIX 56: Steuerung an Marstek zurueckgeben. True = erledigt.\"\"\"",
+        b + "    self.released = True",
+        b + "    return True",
+    ]
+    # Modbus: Steuerung nicht wieder einschalten, solange freigegeben
+    i = find(L, "def _ensure_ctrl(self, client, current_ctrl):")
+    b = ind(L[i + 1])
+    L[i + 1:i + 1] = [b + "if getattr(self, 'released', False):  # FIX 56: an Marstek zurueckgegeben -> nicht wieder uebernehmen",
+                      b + "    return current_ctrl, False"]
+    i = find(L, 'if result["ctrl"] not in self.control_enabled_values:')
+    L[i] = L[i].replace('if result["ctrl"] not in self.control_enabled_values:',
+                        'if result["ctrl"] not in self.control_enabled_values and not getattr(self, "released", False):  # FIX 56')
+    i = find(L, "class ModbusDriver(BatteryDriver):")
+    j = find(L, "def init_control(self):", i)
+    b = ind(L[j])
+    L[j:j] = [
+        b + "def release_control(self):",
+        b + "    \"\"\"FIX 56: Sollwerte 0, Modus STOP, dann RS485-Steuerung aus (42000 = 21947) -> Marstek steuert selbst.\"\"\"",
+        b + "    if globals().get(\"READ_ONLY\", False):",
+        b + "        self.released = True",
+        b + "        return True",
+        b + "    client = self._mk_client()",
+        b + "    if not client.connect():",
+        b + "        self._drop_client()",
+        b + "        return False",
+        b + "    try:",
+        b + "        self._write(client, self.registers[\"charge_set\"], 0)",
+        b + "        time.sleep(0.03)",
+        b + "        self._write(client, self.registers[\"discharge_set\"], 0)",
+        b + "        time.sleep(0.03)",
+        b + "        self._write(client, self.registers[\"mode\"], 0)",
+        b + "        time.sleep(0.05)",
+        b + "        ok = self._write(client, self.registers[\"control\"], 21947)",
+        b + "        time.sleep(0.05)",
+        b + "        regs = self._read(client, self.registers[\"control\"], 1)",
+        b + "        if ok and regs and regs[0] not in self.control_enabled_values:",
+        b + "            self.released = True",
+        b + "            self.log(f\"[{self.name}] Modbus: Steuerung an Marstek zurueckgegeben ({regs[0]})\")",
+        b + "            return True",
+        b + "        return False",
+        b + "    except Exception as e:",
+        b + "        self.error(f\"[{self.name}] ModbusDriver.release_control: {e}\")",
+        b + "        return False",
+        b + "    finally:",
+        b + "        try:",
+        b + "            self._done(client)",
+        b + "        except Exception:",
+        b + "            pass",
+        "",
+    ]
+    i = find(L, "class ApiDriver(BatteryDriver):")
+    j = find(L, "def init_control(self):", i)
+    b = ind(L[j])
+    L[j:j] = [
+        b + "def release_control(self):",
+        b + "    \"\"\"FIX 56: 0 W, dann Modus Auto -> Marstek steuert wieder selbst (wie in der App eingestellt).\"\"\"",
+        b + "    if globals().get(\"READ_ONLY\", False):",
+        b + "        self.released = True",
+        b + "        return True",
+        b + "    self._send_power(0, \"(Rueckgabe an Marstek)\")",
+        b + "    res = self._call(\"ES.SetMode\", {\"id\": 0, \"config\": {\"mode\": \"Auto\", \"auto_cfg\": {\"enable\": 1}}})",
+        b + "    ok = isinstance(res, dict)",
+        b + "    if ok:",
+        b + "        self.released = True",
+        b + "        self._last_power = 0",
+        b + "        self._pending_power = None",
+        b + "        self.invalidate_cache()",
+        b + "        self.log(f\"[{self.name}] API: Steuerung an Marstek zurueckgegeben (Modus Auto)\")",
+        b + "    else:",
+        b + "        self._warn_throttled(\"release\", f\"[{self.name}] API: Modus Auto setzen fehlgeschlagen\")",
+        b + "    return ok",
+        "",
+    ]
+    # Treiberwechsel waehrend abgeschaltet -> neu freigeben
+    i = find(L, "def _replace_driver(self, name, new_drv, init=True):")
+    j = find(L, "self._drivers[name] = new_drv", i)
+    L.insert(j + 1, ind(L[j]) + "getattr(self, '_dis_stopped', set()).discard(name)  # FIX 56: ggf. erneut an Marstek zurueckgeben")
+    # Hauptschleife: freigegebene Batterie ist kein Fehler
+    i = find(L, "if ctrl not in CONTROL_ENABLED_VALUES:")
+    L[i] = L[i].replace("if ctrl not in CONTROL_ENABLED_VALUES:",
+                        "if ctrl not in CONTROL_ENABLED_VALUES and not getattr(driver, 'released', False):  # FIX 56")
+    # Schreiben: abgeschaltet -> zurueckgeben statt nur STOP; wieder an -> uebernehmen
+    i = find(L, "if name in _disabled:  # FIX 29: einmal STOP, danach nicht mehr ansteuern")
+    j = find(L, "_pw_add(name, _drv_d, int(self.last_distribution.get(name, 0)), 0, 0, 0)", i)
+    assert L[j - 1].strip() == "if _drv_d is not None:"
+    assert L[j + 1].strip() == 'write_logs.append(f"{name}: STOP (per Schalter abgeschaltet)")'
+    assert L[j + 2].strip() == "self.last_distribution[name] = 0"
+    assert L[j + 3].strip() == "_ds.add(name)"
+    b = ind(L[j])
+    L[j:j + 4] = [
+        b + "if globals().get('RELEASE_ON_DISABLE', True):  # FIX 56: an Marstek zurueckgeben",
+        b + "    if _drv_d.release_control():",
+        b + "        write_logs.append(f\"{name}: per Schalter abgeschaltet -> STOP und an Marstek zurueckgegeben\")",
+        b + "        self.last_distribution[name] = 0",
+        b + "        _ds.add(name)",
+        b + "    else:",
+        b + "        write_logs.append(f\"{name}: Rueckgabe an Marstek fehlgeschlagen - neuer Versuch im naechsten Zyklus\")",
+        b + "else:",
+        b + "    _pw_add(name, _drv_d, int(self.last_distribution.get(name, 0)), 0, 0, 0)",
+        b + "    write_logs.append(f\"{name}: STOP (per Schalter abgeschaltet)\")",
+        b + "    self.last_distribution[name] = 0",
+        b + "    _ds.add(name)",
+    ]
+    i = find(L, 'getattr(self, "_dis_stopped", set()).discard(name)', i)
+    b = ind(L[i])
+    L[i:i + 1] = [
+        b + "if name in getattr(self, \"_dis_stopped\", set()):  # FIX 56: Schalter wieder an -> Steuerung uebernehmen",
+        b + "    self._dis_stopped.discard(name)",
+        b + "    _drv_r = self._drivers.get(name)",
+        b + "    if _drv_r is not None and getattr(_drv_r, 'released', False):",
+        b + "        _drv_r.released = False",
+        b + "        try:",
+        b + "            _cv56, _ch56 = _drv_r.init_control()",
+        b + "            write_logs.append(f\"{name}: Schalter wieder an -> Steuerung uebernommen ({_cv56})\")",
+        b + "        except Exception as _ex56:",
+        b + "            self.error(f\"[{name}] Uebernahme nach Schalter an fehlgeschlagen: {_ex56}\")",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix56_config(src):
+    if "FIX 56" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "SOC_SAFETY_AFTER_HOURS = 48")
+    L[i] = "SOC_SAFETY_AFTER_HOURS = 24  # FIX 56: Standard 24 h (vorher 48 h), im Dashboard einstellbar, 0 = sofort"
+    i = find(L, "CONTROL_DISABLED_VALUES = {21947, 0}")
+    L[i + 1:i + 1] = [
+        "",
+        "# FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> Batterie an Marstek zurueckgeben",
+        "# (Modbus: Register 42000 = 21947, API: Modus Auto). Dann laesst sie sich wieder in der Marstek-App steuern.",
+        "# False = altes Verhalten (nur einmal STOP, Steuerung bleibt beim Script).",
+        "RELEASE_ON_DISABLE = True",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_config.py", "exec")
+    return out
+
+
+def fix56_mqtt(src):
+    if '"SOC_SAFETY_AFTER_HOURS"' in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '("SOC_SAFETY_CHARGE_W",', startswith=True)
+    L.insert(i + 1, ind(L[i]) + '("SOC_SAFETY_AFTER_HOURS",    "number", "Notladung: Wartezeit unter Min-SoC", 0, 96, 1, "h",  "mdi:timer-outline",      None),  # FIX 56')
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+def fix56_dashboard(cfg):
+    """FIX 56: Wartezeit der Notladung einstellbar; Hilfetexte: Ausschalten gibt an Marstek zurueck."""
+    if "number.marstek_soc_safety_after_hours" in json.dumps(cfg, ensure_ascii=False):
+        return cfg
+    hits = {"row": 0, "tab": 0, "help": 0, "main": 0, "del": 0, "fixed": 0}
+    MAIN_OLD = "Alle Batterien bekommen **einmal STOP** und bleiben dann im Leerlauf. Auch Notladung und BMS-Pflege pausieren. Wieder an = alles läuft normal weiter."
+    MAIN_NEW = ("Alle Batterien werden gestoppt und **an Marstek zurückgegeben** (Modbus: RS485-Steuerung aus, WLAN/API: Modus „Automatik“). "
+                "Sie arbeiten dann wieder so, wie es in der **Marstek-App** eingestellt ist – dort kann man z. B. auch von Hand laden. "
+                "Notladung und BMS-Pflege pausieren. Wieder an = das Script übernimmt die Batterien wieder.\n"
+                "- **Wichtig:** Pro Batterie nur **ein** Programm, das per Modbus steuert. Läuft zusätzlich eine andere Modbus-Integration "
+                "(z. B. mit einem Schalter „RS485-Steuerung“), bitte diese deaktivieren – sonst greifen beide gleichzeitig zu.")
+    BAT_OLD = "Sie bekommt einmal STOP, danach schickt das Script ihr nichts mehr."
+    BAT_NEW = "Sie wird gestoppt und an Marstek zurückgegeben (wie beim Hauptschalter) und lässt sich dann in der Marstek-App steuern."
+    DEL_OLD = "Die Batterie bekommt einmal STOP und wird dann in Ruhe gelassen."
+    DEL_NEW = "Die Batterie wird gestoppt, an Marstek zurückgegeben (in der Marstek-App steuerbar) und dann in Ruhe gelassen."
+    HELP_REPL = (
+        ("Bleibt eine Batterie **48 Stunden** auf oder unter dem Min-SoC (z. B. im Winter), wird sie ein Stück nachgeladen.",
+         "Bleibt eine Batterie die eingestellte **Wartezeit** (Standard 24 Stunden) auf oder unter dem Min-SoC (z. B. im Winter), wird sie ein Stück nachgeladen."),
+        ("die 48-Stunden-Uhr startet.", "die Wartezeit läuft los."),
+        ("- **Ziel-SoC:**", "- **Wartezeit unter Min-SoC:** So lange muss die Batterie auf oder unter dem Min-SoC sein, bevor nachgeladen wird. **0 = sofort.**\n- **Ziel-SoC:**"),
+        ("nach den 48 h wird zuerst", "nach der Wartezeit wird zuerst"),
+        ("(Standard 12 h, also spätestens nach 60 h insgesamt)", "(Standard 12 h, also spätestens Wartezeit + 12 h)"),
+        ("('SOC_SAFETY_CHARGE_W','number','Notladeleistung','W'),",
+         "('SOC_SAFETY_CHARGE_W','number','Notladeleistung','W'),('SOC_SAFETY_AFTER_HOURS','number','Wartezeit unter Min-SoC','h'),"),
+    )
+
+    def walk(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("entities"), list):
+                new = []
+                for r in o["entities"]:
+                    new.append(r)
+                    if isinstance(r, dict) and r.get("entity") == "number.marstek_soc_safety_charge_w":
+                        new.append({"entity": "number.marstek_soc_safety_after_hours", "name": "Wartezeit unter Min-SoC"})
+                        hits["row"] += 1
+                o["entities"] = new
+            c = o.get("content")
+            if isinstance(c, str):
+                if "SoC-Schutz / Notladung: Tabelle Jetzt/Original" in c:
+                    for a, bnew in HELP_REPL:
+                        assert c.count(a) == 1, a
+                        c = c.replace(a, bnew, 1)
+                    hits["help"] += 1
+                if MAIN_OLD in c:
+                    c = c.replace(MAIN_OLD, MAIN_NEW, 1)
+                    hits["main"] += 1
+                if BAT_OLD in c:
+                    c = c.replace(BAT_OLD, BAT_NEW, 1)
+                if DEL_OLD in c:
+                    c = c.replace(DEL_OLD, DEL_NEW, 1)
+                    hits["del"] += 1
+                if "| SoC-Schutz nach | `SOC_SAFETY_AFTER_HOURS` |" in c:
+                    c = _re.sub(r"\| SoC-Schutz nach \| `SOC_SAFETY_AFTER_HOURS` \| \*\*[^|]*\*\* \|\n", "", c)
+                    hits["fixed"] += 1
+                o["content"] = c
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+    walk(cfg)
+    assert hits["row"] == 1 and hits["help"] == 1 and hits["main"] == 1, hits
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1635,12 +1872,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))), ("pv_mqtt.py", lambda t: fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))),
-                  ("pv_config.py", lambda t: fix53_config(fix50_config(fix40_config(t))))):
+    for fn, f in (("pv_control.py", lambda t: fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
+                  ("pv_config.py", lambda t: fix56_config(fix53_config(fix50_config(fix40_config(t)))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -1654,12 +1891,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))))
-    wr(os.path.join(dst, "pv_config.py"), fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))))
+       fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))))
+    wr(os.path.join(dst, "pv_config.py"), fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))))))))
+    cfg = fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")

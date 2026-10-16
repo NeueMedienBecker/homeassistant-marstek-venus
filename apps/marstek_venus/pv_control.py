@@ -68,6 +68,7 @@ Aenderungen:
 - FIX 50: hoechste/niedrigste Zellspannung (Modbus 37007/37008) und Unterschied in mV je Batterie (sensor.marstekvenus_N_cell_voltage_delta, nur Modbus); liegt der Unterschied >= BMS_CARE_CELL_DELTA_MV laenger an, wird die BMS-Pflege vorgezogen (nur mit PV-Ueberschuss, fruehestens nach BMS_CARE_CELL_MIN_DAYS).
 - FIX 53: Vollladung bis 100 % (Standard); zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie >= 99 % zeigt und BMS_FULL_STALL_S lang trotz Ladebefehl < BMS_FULL_STALL_W aufnimmt.
 - FIX 55: BMS-Pflege zeigt im Dashboard, ob sie mit PV-Ueberschuss laedt, pausiert und auf Sonne wartet (mit Uhrzeit, ab wann aus dem Netz geladen wird) oder in der Haltephase ist.
+- FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> die Batterie wird gestoppt und an Marstek zurueckgegeben (Modbus: RS485-Steuerung aus, API: Modus Auto) und nicht wieder uebernommen, bis der Schalter wieder an ist. Wartezeit der Notladung im Dashboard einstellbar.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -88,7 +89,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.23"  # FIX 39
+PV_CONTROL_VERSION = "2.0.24"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -325,6 +326,13 @@ class BatteryDriver:
         """Einmaliger Aufruf beim Start. Gibt (ctrl_val, changed) zurueck."""
         return 21930, False
 
+    released = False  # FIX 56: True = Steuerung an Marstek zurueckgegeben
+
+    def release_control(self):
+        """FIX 56: Steuerung an Marstek zurueckgeben. True = erledigt."""
+        self.released = True
+        return True
+
 
 class ModbusDriver(BatteryDriver):
     """
@@ -444,6 +452,8 @@ class ModbusDriver(BatteryDriver):
             return False
 
     def _ensure_ctrl(self, client, current_ctrl):
+        if getattr(self, 'released', False):  # FIX 56: an Marstek zurueckgegeben -> nicht wieder uebernehmen
+            return current_ctrl, False
         if current_ctrl in self.control_enabled_values:
             return current_ctrl, False
         for code in self.control_enable_candidates:
@@ -506,7 +516,7 @@ class ModbusDriver(BatteryDriver):
             else:
                 result["err"] = 1
 
-            if result["ctrl"] not in self.control_enabled_values:
+            if result["ctrl"] not in self.control_enabled_values and not getattr(self, "released", False):  # FIX 56
                 result["err"] = 1
 
         except Exception as e:
@@ -548,6 +558,39 @@ class ModbusDriver(BatteryDriver):
             return True
         except Exception as e:
             self.error(f"[{self.name}] ModbusDriver.write_setpoints: {e}")
+            return False
+        finally:
+            try:
+                self._done(client)
+            except Exception:
+                pass
+
+    def release_control(self):
+        """FIX 56: Sollwerte 0, Modus STOP, dann RS485-Steuerung aus (42000 = 21947) -> Marstek steuert selbst."""
+        if globals().get("READ_ONLY", False):
+            self.released = True
+            return True
+        client = self._mk_client()
+        if not client.connect():
+            self._drop_client()
+            return False
+        try:
+            self._write(client, self.registers["charge_set"], 0)
+            time.sleep(0.03)
+            self._write(client, self.registers["discharge_set"], 0)
+            time.sleep(0.03)
+            self._write(client, self.registers["mode"], 0)
+            time.sleep(0.05)
+            ok = self._write(client, self.registers["control"], 21947)
+            time.sleep(0.05)
+            regs = self._read(client, self.registers["control"], 1)
+            if ok and regs and regs[0] not in self.control_enabled_values:
+                self.released = True
+                self.log(f"[{self.name}] Modbus: Steuerung an Marstek zurueckgegeben ({regs[0]})")
+                return True
+            return False
+        except Exception as e:
+            self.error(f"[{self.name}] ModbusDriver.release_control: {e}")
             return False
         finally:
             try:
@@ -1097,6 +1140,24 @@ class ApiDriver(BatteryDriver):
             return True
         return self._send_power(power)
 
+    def release_control(self):
+        """FIX 56: 0 W, dann Modus Auto -> Marstek steuert wieder selbst (wie in der App eingestellt)."""
+        if globals().get("READ_ONLY", False):
+            self.released = True
+            return True
+        self._send_power(0, "(Rueckgabe an Marstek)")
+        res = self._call("ES.SetMode", {"id": 0, "config": {"mode": "Auto", "auto_cfg": {"enable": 1}}})
+        ok = isinstance(res, dict)
+        if ok:
+            self.released = True
+            self._last_power = 0
+            self._pending_power = None
+            self.invalidate_cache()
+            self.log(f"[{self.name}] API: Steuerung an Marstek zurueckgegeben (Modus Auto)")
+        else:
+            self._warn_throttled("release", f"[{self.name}] API: Modus Auto setzen fehlgeschlagen")
+        return ok
+
     def init_control(self):
         """Beim Start / Treiberwechsel: Zustand lesen und STOP senden (definierter Zustand)."""
         st = self.read_state()
@@ -1629,6 +1690,7 @@ class PVControlApp(Hass):
         if old is not None and old is not new_drv:
             self._close_driver(old)
         self._drivers[name] = new_drv
+        getattr(self, '_dis_stopped', set()).discard(name)  # FIX 56: ggf. erneut an Marstek zurueckgeben
         if init:
             # FIX 32: neuer Treiber im laufenden Betrieb -> wie beim Start initialisieren
             # (Modbus: RS485-Steuermodus 42000 setzen, API: STOP senden)
@@ -2930,7 +2992,7 @@ class PVControlApp(Hass):
                 sum_ac += ac
                 states[name].update(ac=ac, bp=bp, soc=soc, ctrl=ctrl, mode=mode)
 
-                if ctrl not in CONTROL_ENABLED_VALUES:
+                if ctrl not in CONTROL_ENABLED_VALUES and not getattr(driver, 'released', False):  # FIX 56
                     states[name]["err"] = 1
 
                 if DEBUG_STATE and CALC_LOG:
@@ -3256,12 +3318,29 @@ class PVControlApp(Hass):
                     if name not in _ds and not st.get("err"):
                         _drv_d = self._drivers.get(name)
                         if _drv_d is not None:
-                            _pw_add(name, _drv_d, int(self.last_distribution.get(name, 0)), 0, 0, 0)
-                            write_logs.append(f"{name}: STOP (per Schalter abgeschaltet)")
-                            self.last_distribution[name] = 0
-                            _ds.add(name)
+                            if globals().get('RELEASE_ON_DISABLE', True):  # FIX 56: an Marstek zurueckgeben
+                                if _drv_d.release_control():
+                                    write_logs.append(f"{name}: per Schalter abgeschaltet -> STOP und an Marstek zurueckgegeben")
+                                    self.last_distribution[name] = 0
+                                    _ds.add(name)
+                                else:
+                                    write_logs.append(f"{name}: Rueckgabe an Marstek fehlgeschlagen - neuer Versuch im naechsten Zyklus")
+                            else:
+                                _pw_add(name, _drv_d, int(self.last_distribution.get(name, 0)), 0, 0, 0)
+                                write_logs.append(f"{name}: STOP (per Schalter abgeschaltet)")
+                                self.last_distribution[name] = 0
+                                _ds.add(name)
                     continue
-                getattr(self, "_dis_stopped", set()).discard(name)
+                if name in getattr(self, "_dis_stopped", set()):  # FIX 56: Schalter wieder an -> Steuerung uebernehmen
+                    self._dis_stopped.discard(name)
+                    _drv_r = self._drivers.get(name)
+                    if _drv_r is not None and getattr(_drv_r, 'released', False):
+                        _drv_r.released = False
+                        try:
+                            _cv56, _ch56 = _drv_r.init_control()
+                            write_logs.append(f"{name}: Schalter wieder an -> Steuerung uebernommen ({_cv56})")
+                        except Exception as _ex56:
+                            self.error(f"[{name}] Uebernahme nach Schalter an fehlgeschlagen: {_ex56}")
                 if name in bms_active:
                     calc_logs.append(f"{name}: Regelung uebersprungen - BMS-Ladung aktiv")
                     continue

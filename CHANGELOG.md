@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.0.24 (2026-10-16)
+
+### Neu
+- **Ausschalten gibt die Batterie an Marstek zurueck**: Hauptschalter 'Regelung aktiv' oder 'Venus N vom Script gesteuert' aus -> die Batterie wird gestoppt und die Steuerung an Marstek zurueckgegeben (Modbus: RS485-Steuerung aus, Register 42000 = 21947; WLAN/API: Modus Auto). Sie laesst sich dann wieder in der Marstek-App bedienen (z. B. von Hand laden). Schalter wieder an -> das Script uebernimmt wieder. Abschaltbar mit RELEASE_ON_DISABLE = False.
+- **Notladung: Wartezeit einstellbar**: 'Wartezeit unter Min-SoC' (SOC_SAFETY_AFTER_HOURS) im Dashboard unter SoC-Schutz / Notladung, 0 = sofort. Standard fuer neue Installationen 24 h (vorher fest 48 h).
+
+### Behoben
+- Bisher schaltete das Script die RS485-Steuerung bei jedem Auslesen wieder ein, auch wenn die Batterie im Dashboard abgeschaltet war - die Marstek-App kam nicht an die Batterie.
+
 ## 2.0.23 (2026-10-15)
 
 ### Neu

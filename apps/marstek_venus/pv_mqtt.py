@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.23",
+    "sw_version": "2.0.24",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -83,6 +83,7 @@ BASE_PARAMS = [
     ("SOC_SAFETY_MIN_SOC",        "number", "Min-SoC (Notladung ab)",      5,    50,   1,    "%",   "mdi:battery-alert",      None),
     ("SOC_SAFETY_TARGET_SOC",     "number", "Ziel-SoC Notladung",          5,    60,   1,    "%",   "mdi:battery-arrow-up",   None),
     ("SOC_SAFETY_CHARGE_W",       "number", "Notladeleistung",             100,  2500, 50,   "W",   "mdi:flash",              None),
+    ("SOC_SAFETY_AFTER_HOURS",    "number", "Notladung: Wartezeit unter Min-SoC", 0, 96, 1, "h",  "mdi:timer-outline",      None),  # FIX 56
     ("GRID_DEADBAND_W",           "number", "Netz-Totband",                0,    300,  5,    "W",   "mdi:arrow-collapse-horizontal", None),
     ("TOLERANCE_W",               "number", "Regel-Toleranz",              0,    200,  5,    "W",   "mdi:tune-variant",       None),
     ("ENABLE_BMS_CARE",           "switch", "BMS-Pflege (Vollladung)",     None, None, None, None,  "mdi:battery-heart",      None),
