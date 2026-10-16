@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.27 (2026-10-16)
+
+### Behoben
+- **Reparaturmeldung 'Die Einheit von ..._charge_allowed / _discharge_allowed hat sich geaendert'** (nach 2.0.26): Werte ohne Einheit aus der WLAN-API bekommen wieder gar keine Einheit, Modbus-Werte ohne Einheit (z. B. Inverter State) wie frueher eine leere. Die Meldungen verschwinden danach von selbst (spaetestens nach einem Neustart von Home Assistant) - bitte nicht 'Loeschen' druecken.
+
 ## 2.0.26 (2026-10-16)
 
 ### Behoben
