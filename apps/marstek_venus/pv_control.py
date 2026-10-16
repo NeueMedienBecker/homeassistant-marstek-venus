@@ -69,6 +69,7 @@ Aenderungen:
 - FIX 53: Vollladung bis 100 % (Standard); zeigt eine Batterie nie 100 %, gilt sie als voll, wenn sie >= 99 % zeigt und BMS_FULL_STALL_S lang trotz Ladebefehl < BMS_FULL_STALL_W aufnimmt.
 - FIX 55: BMS-Pflege zeigt im Dashboard, ob sie mit PV-Ueberschuss laedt, pausiert und auf Sonne wartet (mit Uhrzeit, ab wann aus dem Netz geladen wird) oder in der Haltephase ist.
 - FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> die Batterie wird gestoppt und an Marstek zurueckgegeben (Modbus: RS485-Steuerung aus, API: Modus Auto) und nicht wieder uebernommen, bis der Schalter wieder an ist. Wartezeit der Notladung im Dashboard einstellbar.
+- FIX 58: Batterie-Sensoren bekommen wieder state_class/device_class (Langzeitstatistik); fehlten seit 2.0.23 (Attribute werden ersetzt statt gemischt).
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -89,7 +90,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.25"  # FIX 39
+PV_CONTROL_VERSION = "2.0.26"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1349,6 +1350,16 @@ class PVControlApp(Hass):
             if str(unit).lower() == "kwh":
                 a["device_class"] = "energy"
                 a["state_class"]  = "total_increasing"
+            elif isinstance(value, (int, float)):  # FIX 58: Zahlenwerte -> Langzeitstatistik wie frueher
+                a.setdefault("unit_of_measurement", str(unit))
+                a.setdefault("state_class", "measurement")
+                _u58 = str(unit).strip().lower()
+                _dc58 = {"w": "power", "kw": "power", "v": "voltage", "mv": "voltage", "a": "current",
+                         "°c": "temperature", "hz": "frequency"}.get(_u58)
+                if _u58 == "%" and "soc" in str(entity_id):
+                    _dc58 = "battery"
+                if _dc58:
+                    a.setdefault("device_class", _dc58)
             state = str(value) if isinstance(value, (int, float)) else str(value).strip()
             self.set_state(entity_id, state=state, replace=True, attributes=a)
         except Exception as e:

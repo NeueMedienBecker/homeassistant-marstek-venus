@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.26 (2026-10-16)
+
+### Behoben
+- **Reparaturen 'Verfuegt nicht mehr ueber eine Zustandsklasse' / 'Einheit hat sich geaendert'**: Seit 2.0.23 fehlten bei den Batterie-Sensoren (z. B. Battery SoC, AC Power, Battery Voltage, Inverter State) state_class und device_class - Home Assistant konnte keine Langzeitstatistik mehr bilden. Zahlenwerte bekommen jetzt wieder state_class 'measurement', ihre Einheit und die passende device_class. Die Reparaturmeldungen verschwinden danach von selbst. **Bitte dort NICHT 'Loeschen' druecken** - das wuerde die bisherige Statistik loeschen.
+
 ## 2.0.25 (2026-10-16)
 
 ### Geaendert

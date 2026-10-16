@@ -1638,6 +1638,35 @@ def fix57_dashboard(cfg):
     return cfg
 
 
+def fix58_control(src):
+    """FIX 58: _set_ha_sensor setzt fuer Zahlenwerte state_class 'measurement', Einheit und passende device_class."""
+    if "FIX 58" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 56:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 58: Batterie-Sensoren bekommen wieder state_class/device_class (Langzeitstatistik); "
+                                "fehlten seit 2.0.23 (Attribute werden ersetzt statt gemischt).")
+    i = find(L, "def _set_ha_sensor(self, entity_id, value, unit=\"\", attrs=None):")
+    j = find(L, 'a["state_class"]  = "total_increasing"', i)
+    assert L[j - 2].strip() == 'if str(unit).lower() == "kwh":'
+    b = ind(L[j - 2])
+    L[j + 1:j + 1] = [
+        b + "elif isinstance(value, (int, float)):  # FIX 58: Zahlenwerte -> Langzeitstatistik wie frueher",
+        b + "    a.setdefault(\"unit_of_measurement\", str(unit))",
+        b + "    a.setdefault(\"state_class\", \"measurement\")",
+        b + "    _u58 = str(unit).strip().lower()",
+        b + "    _dc58 = {\"w\": \"power\", \"kw\": \"power\", \"v\": \"voltage\", \"mv\": \"voltage\", \"a\": \"current\",",
+        b + "             \"°c\": \"temperature\", \"hz\": \"frequency\"}.get(_u58)",
+        b + "    if _u58 == \"%\" and \"soc\" in str(entity_id):",
+        b + "        _dc58 = \"battery\"",
+        b + "    if _dc58:",
+        b + "        a.setdefault(\"device_class\", _dc58)",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1900,7 +1929,7 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
+    for fn, f in (("pv_control.py", lambda t: fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
                   ("pv_config.py", lambda t: fix56_config(fix53_config(fix50_config(fix40_config(t)))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
@@ -1919,7 +1948,7 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))))
+       fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))))
     wr(os.path.join(dst, "pv_config.py"), fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))))
     raw = json.loads(rd(a.dashboard))
