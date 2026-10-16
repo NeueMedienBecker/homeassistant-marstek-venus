@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.0.28 (2026-10-16)
+
+### Behoben
+- **Riesige Batterie-Werte im Energie-Dashboard nach einem Neustart** (z. B. 577 kWh an einem Tag): Direkt nach einem Neustart kannte die Steuerung bei WLAN-Batterien Modell und Firmware noch nicht und schickte Zaehlerstaende ohne Firmware-Faktor (4,5 statt 450 kWh). Home Assistant wertete das als Zaehler-Neustart und zaehlte beim naechsten richtigen Wert alles noch einmal. Jetzt werden solche Werte erst gesendet, wenn die Firmware bekannt ist (Abfrage alle 60 s statt 10 min), und der Ausreisser-Schutz merkt sich die letzten Zaehlerstaende auch ueber Neustarts (pv_kwh_last.json im App-Ordner).
+
 ## 2.0.27 (2026-10-16)
 
 ### Behoben

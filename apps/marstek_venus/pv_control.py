@@ -71,6 +71,7 @@ Aenderungen:
 - FIX 56: Hauptschalter oder 'Venus N vom Script gesteuert' aus -> die Batterie wird gestoppt und an Marstek zurueckgegeben (Modbus: RS485-Steuerung aus, API: Modus Auto) und nicht wieder uebernommen, bis der Schalter wieder an ist. Wartezeit der Notladung im Dashboard einstellbar.
 - FIX 58: Batterie-Sensoren bekommen wieder state_class/device_class (Langzeitstatistik); fehlten seit 2.0.23 (Attribute werden ersetzt statt gemischt).
 - FIX 59: Werte ohne Einheit: Modbus wie frueher mit leerer Einheit, API ohne Einheit (sonst Reparaturmeldung 'Einheit hat sich geaendert').
+- FIX 60: Energiezaehler: nach einem Neustart keine API-Werte mit falschem Firmware-Faktor mehr (z. B. 4,5 statt 450 kWh -> Sprung im Energie-Dashboard); Ausreisser-Schutz merkt sich die letzten Zaehlerstaende ueber Neustarts (pv_kwh_last.json).
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -91,7 +92,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.27"  # FIX 39
+PV_CONTROL_VERSION = "2.0.28"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1071,7 +1072,7 @@ class ApiDriver(BatteryDriver):
 
     def _ensure_device_info(self):
         """FIX 37: Modell und Firmware einmalig per Marstek.GetDevice holen; bei Misserfolg alle 10 min erneut."""
-        if self._device_ver is not None or (time.time() - self._devinfo_ts) < 600:
+        if self._device_ver is not None or (time.time() - self._devinfo_ts) < 60:  # FIX 60: vorher 600
             return
         self._devinfo_ts = time.time()
         r = self._call_cached("Marstek.GetDevice", {"ble_mac": "0"})
@@ -1298,6 +1299,25 @@ class PVControlApp(Hass):
             return None
         last = self.__dict__.setdefault('_kwh_last', {})
         pend = self.__dict__.setdefault('_kwh_pend', {})
+        _f60 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pv_kwh_last.json')  # FIX 60
+        if not self.__dict__.get('_kwh_loaded'):
+            self._kwh_loaded = True
+            try:
+                _mt60 = os.path.getmtime(_f60)
+                with open(_f60, encoding='utf-8') as _fh60:
+                    for _k60, _v60 in (json.load(_fh60) or {}).items():
+                        if float(_v60) > 0:
+                            last.setdefault(_k60, (float(_v60), _mt60))
+            except Exception:
+                pass
+        if last and now - float(self.__dict__.get('_kwh_saved', 0)) >= 300:
+            self._kwh_saved = now
+            try:
+                with open(_f60 + '.tmp', 'w', encoding='utf-8') as _fh60:
+                    json.dump({_k60: round(float(_v60[0]), 3) for _k60, _v60 in last.items()}, _fh60)
+                os.replace(_f60 + '.tmp', _f60)
+            except Exception as _ex60:
+                self.log(f'ENERGIE: pv_kwh_last.json nicht gespeichert: {_ex60}', level='WARNING')
         if eid not in last:
             try:
                 cur = float(self.get_state(eid))
@@ -1560,9 +1580,12 @@ class PVControlApp(Hass):
         idx             = int(BATTERY_META.get(battery_name, {}).get("idx", 0) or 0)
         friendly_prefix = f"MarstekVenus {idx}"
 
+        _fwk60 = {mk for _t in (globals().get('API_FW_SCALE', {}) or {}).values() for mk in (_t or {})}  # FIX 60
         for key, spec in active.items():
             raw_val = method_cache.get(spec["method"], {}).get(spec["key"])
             if raw_val is None:
+                continue
+            if driver._device_ver is None and (spec["method"], spec["key"]) in _fwk60:  # FIX 60: Faktor noch unbekannt
                 continue
             try:
                 scale = float(spec.get("scale", 1.0))

@@ -1687,6 +1687,61 @@ def fix59_control(src):
     return out
 
 
+def fix60_control(src):
+    """FIX 60: (1) API-Werte mit Firmware-Faktor erst senden, wenn Modell/Firmware bekannt sind (GetDevice alle 60 s
+    statt 10 min erneut versuchen). (2) _kwh_guard merkt sich die letzten Zaehlerstaende in pv_kwh_last.json,
+    damit nach einem Neustart von Home Assistant (Zustand 'unavailable') kein falscher Wert durchrutscht."""
+    if "FIX 60" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 59:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 60: Energiezaehler: nach einem Neustart keine API-Werte mit falschem Firmware-Faktor mehr "
+                                "(z. B. 4,5 statt 450 kWh -> Sprung im Energie-Dashboard); Ausreisser-Schutz merkt sich die "
+                                "letzten Zaehlerstaende ueber Neustarts (pv_kwh_last.json).")
+    # (1a) GetDevice schneller wiederholen
+    i = find(L, "if self._device_ver is not None or (time.time() - self._devinfo_ts) < 600:")
+    L[i] = L[i].replace("< 600:", "< 60:  # FIX 60: vorher 600")
+    # (1b) skalierte Werte zurueckhalten, solange die Firmware unbekannt ist
+    i = find(L, "for key, spec in active.items():")
+    assert L[i + 1].strip() == 'raw_val = method_cache.get(spec["method"], {}).get(spec["key"])'
+    assert L[i + 2].strip() == "if raw_val is None:" and L[i + 3].strip() == "continue"
+    b = ind(L[i])
+    L[i:i] = [b + "_fwk60 = {mk for _t in (globals().get('API_FW_SCALE', {}) or {}).values() for mk in (_t or {})}  # FIX 60"]
+    i += 1
+    b2 = ind(L[i + 1])
+    L[i + 4:i + 4] = [
+        b2 + "if driver._device_ver is None and (spec[\"method\"], spec[\"key\"]) in _fwk60:  # FIX 60: Faktor noch unbekannt",
+        b2 + "    continue",
+    ]
+    # (2) Guard: laden/speichern
+    i = find(L, "pend = self.__dict__.setdefault('_kwh_pend', {})")
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "_f60 = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pv_kwh_last.json')  # FIX 60",
+        b + "if not self.__dict__.get('_kwh_loaded'):",
+        b + "    self._kwh_loaded = True",
+        b + "    try:",
+        b + "        _mt60 = os.path.getmtime(_f60)",
+        b + "        with open(_f60, encoding='utf-8') as _fh60:",
+        b + "            for _k60, _v60 in (json.load(_fh60) or {}).items():",
+        b + "                if float(_v60) > 0:",
+        b + "                    last.setdefault(_k60, (float(_v60), _mt60))",
+        b + "    except Exception:",
+        b + "        pass",
+        b + "if last and now - float(self.__dict__.get('_kwh_saved', 0)) >= 300:",
+        b + "    self._kwh_saved = now",
+        b + "    try:",
+        b + "        with open(_f60 + '.tmp', 'w', encoding='utf-8') as _fh60:",
+        b + "            json.dump({_k60: round(float(_v60[0]), 3) for _k60, _v60 in last.items()}, _fh60)",
+        b + "        os.replace(_f60 + '.tmp', _f60)",
+        b + "    except Exception as _ex60:",
+        b + "        self.log(f'ENERGIE: pv_kwh_last.json nicht gespeichert: {_ex60}', level='WARNING')",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -1949,7 +2004,7 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
+    for fn, f in (("pv_control.py", lambda t: fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
                   ("pv_config.py", lambda t: fix56_config(fix53_config(fix50_config(fix40_config(t)))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
@@ -1968,7 +2023,7 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))))))
+       fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))))
     wr(os.path.join(dst, "pv_config.py"), fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))))
     raw = json.loads(rd(a.dashboard))
