@@ -133,6 +133,50 @@ Das Vorzeichen des Zählers ist vertauscht: Installer mit *--meter* starten und 
 **Ich habe die alte Ein-Datei-Version (1.0) im Einsatz.**
 Einfach den Installer ausführen. Die alte Datei bleibt liegen, bitte den alten Eintrag in *apps.yaml* danach entfernen.
 
+**Kann eine Batterie laden, während eine andere entlädt?**
+Nein. Die Regelung entscheidet in jedem Takt für alle geregelten Batterien gemeinsam: entweder alle laden oder
+alle entladen. Die Leistung wird nur innerhalb dieser Richtung verteilt (nach Ladestand und Kapazität). Einzige
+Ausnahme ist eine Batterie in **BMS-Pflege** oder **Notladung**, die gezielt geladen wird – dabei ist abgesichert,
+dass die anderen **nicht für diese Ladung entladen**; sie decken höchstens den Hausverbrauch darüber hinaus.
+
+**Wie sieht die Einrichtung mit zwei Batterien aus? Braucht jede einen eigenen api_port?**
+Normalerweise trägt der Installer alle Batterien selbst ein. Von Hand (*pv_config.py*, *BATTERY_CONFIG*):
+
+```python
+BATTERY_CONFIG = {
+    "battery1": {"enabled": True, "comm_mode": "api", "api_host": "192.168.1.51", "api_port": 30000,
+                 "modbus_host": "192.168.1.50", "port": 502, "unit": 1,
+                 "capacity_kwh": 5.12, "max_charge_w": 2500, "max_discharge_w": 2500, "min_soc": 11, "max_soc": 99},
+    "battery2": {"enabled": True, "comm_mode": "api", "api_host": "192.168.1.52", "api_port": 30000,
+                 "modbus_host": "192.168.1.60", "port": 502, "unit": 1,
+                 "capacity_kwh": 5.12, "max_charge_w": 2500, "max_discharge_w": 2500, "min_soc": 11, "max_soc": 99},
+}
+```
+
+Jede Batterie braucht eine **eigene IP-Adresse**, aber **keinen eigenen api_port** – alle nutzen 30000, die
+Steuerung unterscheidet sie an der IP. Bei Modbus hat jede Batterie ihren eigenen RS485-LAN-Adapter (Port 502, unit 1).
+*comm_mode*: `api` oder `modbus`; „Modbus, sonst API“ bzw. „API, sonst Modbus“ stellt man im Dashboard je Batterie unter *Anbindung* ein.
+
+**Gelten die Modbus-Register auch für die Venus E 3.0?**
+Die Steuer-Register (42000 Steuerung freigeben, 42010 Lade-/Entlade-Modus, 42020/42021 Leistung) sind laut
+Berichten gleich geblieben. Bei manchen Messwerten hängt es von der Firmware ab: die Energiezähler (33000/33002)
+liefern bei einigen 3.0-Geräten erst ab Firmware 146/148 richtige Werte. Für die 3.0 empfehlen wir die
+**WLAN-Anbindung (Local API)** – sie erkennt Modell und Firmware und rechnet abweichende Einheiten automatisch um.
+Erfahrungen mit der 3.0 per Modbus bitte gern als Issue melden.
+
+**Die Local API schaltet sich ab und der Modus springt auf „Manuell“.**
+Das ist ein bekannter Fehler älterer Firmware (Venus E 3.0 unter Version 150, Venus A unter 148) und lässt sich
+von außen nicht erkennen. Die Steuerung fragt deshalb bewusst zurückhaltend ab: lesen alle **15 s**, mindestens
+**1 s** Pause zwischen zwei Anfragen, alle Anfragen nacheinander, Sollwert nur bei Änderung über **50 W**, nach
+Fehlern **15 s** Pause. Empfehlung: Firmware aktualisieren; sonst Anbindung „Modbus“ oder „API, sonst Modbus“ wählen.
+
+**Darf neben der Steuerung eine andere Integration die Batterie nur lesen?**
+Besser nicht. Die Local API verträgt praktisch nur **einen** Abfrager: fragt eine zweite Integration dieselbe
+Batterie ab, gehen Antworten verloren oder landen beim falschen Programm, und bei älterer Firmware steigt das
+Risiko, dass sich die API abschaltet. Dasselbe gilt für Modbus (ein Programm pro Adapter). Die Steuerung liefert
+alle wichtigen Werte selbst als Sensoren (Ladestand, Leistung, Energie, Temperaturen …) – eine zweite Integration
+ist nicht nötig und sollte deaktiviert werden.
+
 ---
 
 ## Das Dashboard „Marstek"

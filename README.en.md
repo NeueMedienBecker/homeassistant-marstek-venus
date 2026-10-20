@@ -128,6 +128,48 @@ batteries are found and added, the dashboard is rebuilt. Batteries with RS485 ad
 **The batteries charge when they should discharge.**
 The meter sign is inverted: run the installer with *--meter* and answer the sign question with "no".
 
+**Can one battery charge while another discharges?**
+No. In every cycle the control decides for all controlled batteries together: either all charge or all
+discharge. Power is only shared within that direction (by state of charge and capacity). The only exception is a
+battery in **BMS care** or **emergency charge** that is charged on purpose – the others are prevented from
+**discharging for that charge**; at most they cover the house load beyond it.
+
+**How do I set up two batteries? Does each need its own api_port?**
+Normally the installer adds all batteries itself. By hand (*pv_config.py*, *BATTERY_CONFIG*):
+
+```python
+BATTERY_CONFIG = {
+    "battery1": {"enabled": True, "comm_mode": "api", "api_host": "192.168.1.51", "api_port": 30000,
+                 "modbus_host": "192.168.1.50", "port": 502, "unit": 1,
+                 "capacity_kwh": 5.12, "max_charge_w": 2500, "max_discharge_w": 2500, "min_soc": 11, "max_soc": 99},
+    "battery2": {"enabled": True, "comm_mode": "api", "api_host": "192.168.1.52", "api_port": 30000,
+                 "modbus_host": "192.168.1.60", "port": 502, "unit": 1,
+                 "capacity_kwh": 5.12, "max_charge_w": 2500, "max_discharge_w": 2500, "min_soc": 11, "max_soc": 99},
+}
+```
+
+Each battery needs its **own IP address** but **not its own api_port** – all use 30000, the control tells them
+apart by IP. With Modbus every battery has its own RS485-LAN adapter (port 502, unit 1).
+*comm_mode*: `api` or `modbus`; "Modbus, sonst API" / "API, sonst Modbus" (with fallback) is selected per battery in the dashboard under *Anbindung*.
+
+**Do the Modbus registers also apply to the Venus E 3.0?**
+The control registers (42000 enable control, 42010 charge/discharge mode, 42020/42021 power) are reported to be
+unchanged. Some readings depend on the firmware: the energy counters (33000/33002) only report correct values
+from firmware 146/148 on some 3.0 units. For the 3.0 we recommend the **Wi-Fi connection (Local API)** – it detects
+model and firmware and converts differing units automatically. Please report experiences with the 3.0 via Modbus as an issue.
+
+**The Local API switches itself off and the mode jumps to "Manual".**
+This is a known bug of older firmware (Venus E 3.0 below version 150, Venus A below 148) and cannot be detected
+from outside. That is why the control polls conservatively: read every **15 s**, at least **1 s** between two
+requests, all requests one after the other, setpoint only sent on changes above **50 W**, **15 s** pause after
+errors. Recommendation: update the firmware; otherwise choose "Modbus" or "API, else Modbus".
+
+**May another integration only read the battery alongside the control?**
+Better not. The Local API practically tolerates only **one** client: if a second integration polls the same
+battery, answers get lost or reach the wrong program, and with older firmware the risk of the API switching off
+rises. The same applies to Modbus (one program per adapter). The control publishes all important values as
+sensors itself (state of charge, power, energy, temperatures …) – a second integration is not needed and should be disabled.
+
 ---
 
 ## Troubleshooting
