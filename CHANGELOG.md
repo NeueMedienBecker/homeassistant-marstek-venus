@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.30 (2026-11-17)
+
+### Behoben
+- **Batterie blieb nach Rueckwechsel auf Modbus stehen**: Beim Wechsel zwischen Modbus und WLAN (z. B. wenn ein RS485-Adapter wieder erreichbar ist) wird die Batterie zur Sicherheit gestoppt. Die Steuerung merkte sich aber noch den alten Sollwert und schickte deshalb keinen neuen Befehl - die Batterie stand still. Jetzt bekommt sie sofort wieder ihren Anteil.
+- **'Batterien im Netz neu suchen'**: eingetragene WLAN-Batterien werden nicht mehr als 'weitere Marstek im Netz' gemeldet; ihre Geraetekennung wird dabei gemerkt.
+
 ## 2.0.29 (2026-11-17)
 
 ### Neu

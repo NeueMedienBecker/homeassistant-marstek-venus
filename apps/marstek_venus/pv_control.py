@@ -74,6 +74,7 @@ Aenderungen:
 - FIX 60: Energiezaehler: nach einem Neustart keine API-Werte mit falschem Firmware-Faktor mehr (z. B. 4,5 statt 450 kWh -> Sprung im Energie-Dashboard); Ausreisser-Schutz merkt sich die letzten Zaehlerstaende ueber Neustarts (pv_kwh_last.json).
 - FIX 61: Batterie, die ihren Sollwert laenger als STUCK_AFTER_S nicht umsetzt, bekommt in dieser Richtung keinen Anteil mehr (andere uebernehmen), Meldung in HA; neuer Versuch nach STUCK_RETRY_S.
 - FIX 62: Taste 'Batterien im Netz neu suchen': findet WLAN-Batterien (ueber ihre Geraete-Kennung) und RS485-LAN-Adapter (ueber die Energiezaehler) unter neuer IP und traegt sie ein.
+- FIX 63: Nach einem Wechsel Modbus <-> API wird der letzte Sollwert vergessen - die Batterie bekommt sofort wieder einen Befehl (vorher blieb sie nach dem Sicherheits-STOP stehen). 'Neu suchen' meldet eingetragene WLAN-Batterien nicht mehr als 'weitere Marstek'.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -94,7 +95,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.29"  # FIX 39
+PV_CONTROL_VERSION = "2.0.30"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -1731,6 +1732,8 @@ class PVControlApp(Hass):
         if old is not None and old is not new_drv:
             self._close_driver(old)
         self._drivers[name] = new_drv
+        if isinstance(getattr(self, 'last_distribution', None), dict):  # FIX 63: init_control stoppt -> neu senden
+            self.last_distribution[name] = 0
         getattr(self, '_dis_stopped', set()).discard(name)  # FIX 56: ggf. erneut an Marstek zurueckgeben
         if init:
             # FIX 32: neuer Treiber im laufenden Betrieb -> wie beim Start initialisieren
@@ -2100,7 +2103,16 @@ class PVControlApp(Hass):
                 if not any(m.startswith(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN") for m in msgs):
                     msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN-Adapter "
                                 f"{bats[n].get('modbus_host') or bats[n].get('host')} nicht gefunden (Strom/Kabel pruefen)")
-            other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values()]
+            known_api = {str(c.get('api_host') or ''): n for n, c in bats.items()}  # FIX 63
+            learn = {}
+            for ip, src in found.items():
+                n = known_api.get(ip)
+                if n and ids.get(n) != src:
+                    learn[n] = src
+                    ids[n] = src
+            if learn:
+                self._devid62_save(learn)
+            other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values() and ip not in known_api]
             if other:
                 msgs.append('weitere Marstek im Netz: ' + ', '.join(other[:4]))
             txt = '; '.join(msgs) if msgs else 'alle Batterien unter den eingetragenen Adressen gefunden'

@@ -2177,6 +2177,39 @@ def fix62_dashboard(cfg):
     return cfg
 
 
+def fix63_control(src):
+    """FIX 63: _replace_driver setzt last_distribution der Batterie auf 0 (init_control stoppt sie);
+    Neu suchen: Antworten von schon eingetragenen WLAN-IPs = bekannte Batterie (Kennung merken)."""
+    if "FIX 63" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 62:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 63: Nach einem Wechsel Modbus <-> API wird der letzte Sollwert vergessen - die Batterie bekommt "
+                                "sofort wieder einen Befehl (vorher blieb sie nach dem Sicherheits-STOP stehen). 'Neu suchen' "
+                                "meldet eingetragene WLAN-Batterien nicht mehr als 'weitere Marstek'.")
+    i = find(L, "self._drivers[name] = new_drv")
+    b = ind(L[i])
+    L.insert(i + 1, b + "if isinstance(getattr(self, 'last_distribution', None), dict):  # FIX 63: init_control stoppt -> neu senden")
+    L.insert(i + 2, b + "    self.last_distribution[name] = 0")
+    i = find(L, "other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values()]")
+    b = ind(L[i])
+    L[i:i + 1] = [
+        b + "known_api = {str(c.get('api_host') or ''): n for n, c in bats.items()}  # FIX 63",
+        b + "learn = {}",
+        b + "for ip, src in found.items():",
+        b + "    n = known_api.get(ip)",
+        b + "    if n and ids.get(n) != src:",
+        b + "        learn[n] = src",
+        b + "        ids[n] = src",
+        b + "if learn:",
+        b + "    self._devid62_save(learn)",
+        b + "other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values() and ip not in known_api]",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -2439,7 +2472,7 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))))))))), ("pv_mqtt.py", lambda t: fix62_mqtt(fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))))),
+    for fn, f in (("pv_control.py", lambda t: fix63_control(fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t)))))))))))))))))))), ("pv_mqtt.py", lambda t: fix62_mqtt(fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))))),
                   ("pv_config.py", lambda t: fix61_config(fix56_config(fix53_config(fix50_config(fix40_config(t))))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
@@ -2458,7 +2491,7 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))))))))
+       fix63_control(fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version)))))))))))))))))))))
     wr(os.path.join(dst, "pv_mqtt.py"), fix62_mqtt(fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))))))
     wr(os.path.join(dst, "pv_config.py"), fix61_config(fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))))))
     raw = json.loads(rd(a.dashboard))
