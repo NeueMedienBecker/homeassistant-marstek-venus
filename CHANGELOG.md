@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.29 (2026-11-17)
+
+### Neu
+- **Taste 'Batterien im Netz neu suchen'** (Konfiguration -> Verwaltung): findet Batterien, die eine neue IP-Adresse bekommen haben - WLAN-Batterien ueber ihre Geraetekennung, RS485-LAN-Adapter ueber die Energiezaehler der Batterie - und traegt die neue Adresse automatisch ein. Das Ergebnis steht bei 'Status'.
+- **Batterie setzt Befehle nicht um**: Liefert eine Batterie laenger als 5 min weniger als 20 % ihres Lade-/Entlade-Sollwerts (z. B. Adapter weg, API lehnt Befehle ab), bekommt sie 30 min keinen Anteil mehr; die anderen Batterien uebernehmen. Meldung in Home Assistant (Benachrichtigung), danach neuer Versuch. Einstellbar mit STUCK_DETECT_ENABLE / STUCK_MIN_W / STUCK_AFTER_S / STUCK_RETRY_S.
+
 ## 2.0.28 (2026-10-16)
 
 ### Behoben

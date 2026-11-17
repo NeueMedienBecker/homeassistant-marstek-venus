@@ -72,6 +72,8 @@ Aenderungen:
 - FIX 58: Batterie-Sensoren bekommen wieder state_class/device_class (Langzeitstatistik); fehlten seit 2.0.23 (Attribute werden ersetzt statt gemischt).
 - FIX 59: Werte ohne Einheit: Modbus wie frueher mit leerer Einheit, API ohne Einheit (sonst Reparaturmeldung 'Einheit hat sich geaendert').
 - FIX 60: Energiezaehler: nach einem Neustart keine API-Werte mit falschem Firmware-Faktor mehr (z. B. 4,5 statt 450 kWh -> Sprung im Energie-Dashboard); Ausreisser-Schutz merkt sich die letzten Zaehlerstaende ueber Neustarts (pv_kwh_last.json).
+- FIX 61: Batterie, die ihren Sollwert laenger als STUCK_AFTER_S nicht umsetzt, bekommt in dieser Richtung keinen Anteil mehr (andere uebernehmen), Meldung in HA; neuer Versuch nach STUCK_RETRY_S.
+- FIX 62: Taste 'Batterien im Netz neu suchen': findet WLAN-Batterien (ueber ihre Geraete-Kennung) und RS485-LAN-Adapter (ueber die Energiezaehler) unter neuer IP und traegt sie ein.
 - FIX 16: canonical_key in API_EXPORT_MAP: API und Modbus schreiben auf identische
           HA-Entity-IDs. Treiberwechsel fuer HA vollstaendig unsichtbar.
           z.B.: es_bat_soc->battery_soc, es_ongrid_power->ac_power,
@@ -92,7 +94,7 @@ import threading
 from datetime import datetime
 from appdaemon.plugins.hass.hassapi import Hass
 from pymodbus.client import ModbusTcpClient
-PV_CONTROL_VERSION = "2.0.28"  # FIX 39
+PV_CONTROL_VERSION = "2.0.29"  # FIX 39
 
 # Config direkt per Dateipfad laden – unabhaengig von sys.path und __pycache__.
 # Laedt immer die pv_control_config.py die im gleichen Verzeichnis wie pv_control.py liegt.
@@ -651,6 +653,7 @@ class _ApiHub:
         self.log = log_fn
         self.port = int(port)
         self.queues = {}
+        self.sniff = None  # FIX 62: waehrend 'Neu suchen' Antworten unbekannter Absender sammeln
         self.alive = True
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -693,6 +696,8 @@ class _ApiHub:
             q = self.queues.get(src[0])
             if q is not None:
                 q.put((pkt, time.time()))
+            elif self.sniff is not None:  # FIX 62
+                self.sniff.append((pkt, src[0]))
 
     def close(self):
         self.alive = False
@@ -1901,6 +1906,261 @@ class PVControlApp(Hass):
         fb["retry_at"] = now + (COMM_MODE_FALLBACK_RETRY_MIN * 60)
         return False
 
+    def _stuck61_check(self, name, st, mode, old, mn, mx, write_logs):
+        """FIX 61: Sollwert (old) gegen gemessene Leistung pruefen; nach STUCK_AFTER_S ohne Umsetzung sperren."""
+        if not globals().get('STUCK_DETECT_ENABLE', True) or globals().get('READ_ONLY', False):
+            return
+        now = time.time()
+        d = self.__dict__.setdefault('_stuck61', {})
+        rec = d.get(name)
+        if rec and rec.get('until'):
+            if now >= float(rec['until']):
+                d.pop(name, None)  # Sperre abgelaufen -> neuer Versuch
+                write_logs.append(f"{name}: neuer Versuch - bekommt wieder einen Anteil")
+                self._export_driver_state(name)
+            return
+        try:
+            ac = float(st.get('ac', 0) or 0)  # ac > 0 = Entladen, ac < 0 = Laden
+            soc = int(st.get('soc', 0))
+        except (TypeError, ValueError):
+            return
+        lim = float(globals().get('STUCK_MIN_W', 200))
+        bad = False
+        if mode == 'discharge' and old >= lim and soc > mn + 2:
+            bad = ac < max(50.0, 0.2 * old)
+        elif mode == 'charge' and old >= lim and soc < mx - 2:
+            bad = -ac < max(50.0, 0.2 * old)
+        if not bad:
+            if rec:
+                d.pop(name, None)
+            return
+        if not rec or rec.get('mode') != mode:
+            d[name] = {'since': now, 'mode': mode}
+            return
+        if now - float(rec['since']) < float(globals().get('STUCK_AFTER_S', 300)):
+            return
+        retry = float(globals().get('STUCK_RETRY_S', 1800))
+        rec['until'] = now + retry
+        txt = ('Entladen' if mode == 'discharge' else 'Laden')
+        msg = (f"{name}: setzt den Sollwert ({txt} {int(old)} W) seit {int((now - float(rec['since'])) // 60)} min nicht um "
+               f"(gemessen {int(ac)} W) - bekommt {int(retry // 60)} min keinen Anteil, die anderen Batterien uebernehmen")
+        self.log('STOERUNG: ' + msg, level='WARNING')
+        write_logs.append(msg)
+        self._export_driver_state(name)
+        try:
+            idx = BATTERY_META.get(name, {}).get('idx', name)
+            self.call_service('persistent_notification/create', notification_id=f'marstek_stuck_{name}',
+                              title=f'Marstek: Venus {idx} setzt Befehle nicht um',
+                              message=(f'Venus {idx} sollte {txt.lower()} ({int(old)} W), liefert aber {int(ac)} W. '
+                                       f'Sie bekommt vorlaeufig keinen Anteil, die anderen Batterien uebernehmen. '
+                                       f'Bitte Verbindung pruefen (RS485-Adapter / WLAN, Open API in der Marstek-App) oder im Dashboard unter Verwaltung „Batterien im Netz neu suchen“ druecken. '
+                                       f'Neuer Versuch in {int(retry // 60)} min.'))
+        except Exception:
+            pass
+
+    # ---- FIX 62: Batterien im Netz neu suchen ------------------------------------------------
+    def _devid62_file(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pv_devices.json')
+
+    def _devid62_load(self):
+        try:
+            with open(self._devid62_file(), encoding='utf-8') as fh:
+                return dict(json.load(fh) or {})
+        except Exception:
+            return {}
+
+    def _devid62_save(self, src_map):
+        # Geraete-Kennung (API 'src', z. B. VenusE-009b0805fa17) je Batterie merken - auch fuer spaeter.
+        cur = self._devid62_load()
+        new = dict(cur)
+        new.update({k: v for k, v in (src_map or {}).items() if v})
+        if new != cur:
+            try:
+                with open(self._devid62_file() + '.tmp', 'w', encoding='utf-8') as fh:
+                    json.dump(new, fh)
+                os.replace(self._devid62_file() + '.tmp', self._devid62_file())
+            except Exception as ex:
+                self.log(f'NEU SUCHEN: pv_devices.json nicht gespeichert: {ex}', level='WARNING')
+
+    def start_rescan(self):
+        if getattr(self, '_rescan62_busy', False):
+            return False
+        self._rescan62_busy = True
+        threading.Thread(target=self._rescan62_run, name='rescan', daemon=True).start()
+        return True
+
+    def _rescan62_status(self, txt):
+        br = getattr(self, '_mqtt_bridge', None)
+        if br is not None:
+            try:
+                br._set_status(txt)
+                return
+            except Exception:
+                pass
+        self.log('NEU SUCHEN: ' + txt)
+
+    def _rescan62_tcp(self, ip, port=502, timeout=0.8):
+        s_ = socket.socket()
+        s_.settimeout(timeout)
+        try:
+            s_.connect((ip, int(port)))
+            return True
+        except Exception:
+            return False
+        finally:
+            s_.close()
+
+    def _rescan62_run(self):
+        import concurrent.futures as _cf
+        try:
+            self._rescan62_status('Suche im Netz laeuft (ca. 30 s) ...')
+            msgs = []
+            bats = dict(self.batteries)
+            bases = []
+            for c in bats.values():
+                for k in ('api_host', 'modbus_host', 'host'):
+                    ip = str(c.get(k) or '')
+                    if ip.count('.') == 3:
+                        b = '.'.join(ip.split('.')[:3])
+                        if b not in bases:
+                            bases.append(b)
+            bases = bases[:2]
+            # --- 1) WLAN / Open API: Marstek.GetDevice an alle Adressen, Antworten ueber den gemeinsamen Socket
+            ids = self._devid62_load()
+            for n, d in self._drivers.items():
+                if isinstance(d, ApiDriver) and getattr(d, '_device_src', ''):
+                    ids[n] = d._device_src
+            found = {}
+            hub = None
+            try:
+                hub = _ApiHub.get(int(globals().get('API_LOCAL_PORT', 30000)), self.log)
+                try:
+                    hub.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                except OSError:
+                    pass
+                hub.sniff = []
+                raw = json.dumps({'id': 62, 'method': 'Marstek.GetDevice', 'params': {'ble_mac': '0'}}).encode()
+                known = set(hub.queues.keys())
+                targets = ['255.255.255.255'] + [f'{b}.{i}' for b in bases for i in range(1, 255)]
+                for _r in range(2):
+                    for ip in targets:
+                        if ip in known:
+                            continue
+                        try:
+                            hub.send(raw, ip, int(globals().get('API_UDP_PORT', 30000)))
+                        except OSError:
+                            pass
+                        time.sleep(0.004)
+                    time.sleep(2.0)
+                for pkt, ip in list(hub.sniff or []):
+                    try:
+                        dd = json.loads(pkt.decode('utf-8', errors='replace'))
+                    except ValueError:
+                        continue
+                    res = dd.get('result') or {}
+                    src = dd.get('src') or (f"{res.get('device')}-{res.get('ble_mac')}" if res.get('device') else '')
+                    if src:
+                        found[ip] = src
+            finally:
+                if hub is not None:
+                    hub.sniff = None
+            # Batterien ueber die API-Kennung zuordnen
+            for n, c in bats.items():
+                want = ids.get(n)
+                if not want:
+                    continue
+                for ip, src in found.items():
+                    if src == want and ip != str(c.get('api_host') or ''):
+                        self._rescan62_apply(n, '_API_HOST', ip)
+                        msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: WLAN-IP {c.get('api_host')} -> {ip}")
+            # --- 2) Modbus: Adapter, die nicht mehr antworten, im Netz suchen (Port 502) und ueber die Zaehler zuordnen
+            lost = [n for n, c in bats.items()
+                    if (c.get('modbus_host') or c.get('host'))
+                    and not self._rescan62_tcp(str(c.get('modbus_host') or c.get('host')), c.get('port', 502))]
+            if lost and bases:
+                used = {str(c.get('modbus_host') or c.get('host')) for n, c in bats.items() if n not in lost}
+                cand_ips = [f'{b}.{i}' for b in bases for i in range(1, 255)]
+                with _cf.ThreadPoolExecutor(64) as ex:
+                    open502 = [ip for ip, ok in zip(cand_ips, ex.map(self._rescan62_tcp, cand_ips)) if ok and ip not in used]
+                for ip in open502:
+                    tot = self._rescan62_mb_totals(ip)
+                    if not tot:
+                        continue
+                    for n in list(lost):
+                        ref = self._rescan62_ref_totals(n)
+                        if ref and all(abs(a - b) <= max(0.5, 0.005 * b) for a, b in zip(tot, ref)):
+                            self._rescan62_apply(n, '_MODBUS_HOST', ip)
+                            msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN-Adapter "
+                                        f"{bats[n].get('modbus_host') or bats[n].get('host')} -> {ip}")
+                            lost.remove(n)
+                            break
+            for n in lost:
+                if (getattr(self, '_comm_fallback', {}).get(n, {}) or {}).get('primary_mode', 'modbus') != 'modbus':
+                    continue  # Modbus ist bei dieser Batterie nur Ausweichweg -> keine Meldung
+                if not any(m.startswith(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN") for m in msgs):
+                    msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN-Adapter "
+                                f"{bats[n].get('modbus_host') or bats[n].get('host')} nicht gefunden (Strom/Kabel pruefen)")
+            other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values()]
+            if other:
+                msgs.append('weitere Marstek im Netz: ' + ', '.join(other[:4]))
+            txt = '; '.join(msgs) if msgs else 'alle Batterien unter den eingetragenen Adressen gefunden'
+            self._rescan62_status('Suche fertig: ' + txt)
+            self.log('NEU SUCHEN: ' + txt)
+        except Exception as ex:
+            self._rescan62_status(f'Suche fehlgeschlagen: {ex}')
+        finally:
+            self._rescan62_busy = False
+
+    def _rescan62_mb_totals(self, ip):
+        # Gesamt-Energiezaehler (geladen, entladen) eines Adapters per Modbus lesen, in kWh.
+        drv = None
+        try:
+            drv = _get_driver('rescan', {'comm_mode': 'modbus', 'modbus_host': ip, 'port': 502, 'unit': 1},
+                              self.log, self.log, REGISTERS, MB_TIMEOUT_S, MB_RETRIES,
+                              CONTROL_ENABLED_VALUES, CONTROL_ENABLE_CANDIDATES,
+                              AC_SIGN_INVERT, False, False)
+            cl = drv._mk_client()
+            if not cl.connect():
+                return None
+            regs = drv._read(cl, 33000, 4)
+            if not regs or len(regs) < 4:
+                return None
+            return ((regs[0] << 16 | regs[1]) * 0.01, (regs[2] << 16 | regs[3]) * 0.01)
+        except Exception:
+            return None
+        finally:
+            if drv is not None:
+                try:
+                    drv._drop_client()
+                except Exception:
+                    pass
+
+    def _rescan62_ref_totals(self, name):
+        # Letzte bekannte Zaehlerstaende (geladen, entladen) dieser Batterie in kWh.
+        out = []
+        last = getattr(self, '_kwh_last', {}) or {}
+        for key in ('total_charging_energy', 'total_discharging_energy'):
+            ent = self._ha_entity(name, key)
+            v = None
+            if ent in last:
+                v = float(last[ent][0])
+            else:
+                try:
+                    v = float(self.get_state(ent))
+                except Exception:
+                    v = None
+            if v is None or v <= 1:
+                return None
+            out.append(v)
+        return tuple(out)
+
+    def _rescan62_apply(self, name, suffix, ip):
+        key = name.upper() + suffix
+        br = getattr(self, '_mqtt_bridge', None)
+        if br is not None and hasattr(br, 'set_value') and br.set_value(key, ip):
+            return
+        globals()[key] = ip
+
     def _export_driver_state(self, name):
         """Schreibt den aktuellen Verbindungsweg als HA-Sensor sensor.pv_<name>_comm_mode."""
         try:
@@ -1921,6 +2181,7 @@ class PVControlApp(Hass):
                     "api": f"{self.batteries.get(name, {}).get('api_host', '?')}:{self.batteries.get(name, {}).get('api_port', 30000)}",
                     "geraet": (getattr(self._drivers.get(name), "device_txt", None) or (lambda: ""))(),  # FIX 37
                     "retry_in_min": max(0, int((fb.get("retry_at", 0) - time.time()) / 60)),
+                    "stoerung": ((lambda _r: (f"setzt Sollwert nicht um - kein Anteil bis " + time.strftime('%H:%M', time.localtime(float(_r['until'])))) if _r and _r.get('until') else '-')(getattr(self, '_stuck61', {}).get(name))),  # FIX 61
                 }
             )
         except Exception:
@@ -2673,6 +2934,11 @@ class PVControlApp(Hass):
             cap       = float(cfg["capacity_kwh"])
             bms       = self.bms_state.get(n, {})
             bms_phase = bms.get("phase", "idle")
+            _s61 = getattr(self, '_stuck61', {}).get(n)  # FIX 61: setzt Sollwert nicht um -> vorlaeufig kein Anteil
+            if _s61 and _s61.get('mode') == effective_mode and float(_s61.get('until') or 0) > time.time():
+                if DEBUG_WEIGHTS and CALC_LOG:
+                    self.log(f"{n}: skip {effective_mode} (setzt Sollwert nicht um, neuer Versuch spaeter)")
+                continue
             # FIX 30: nicht erreichbare Batterie (Lesefehler/Sperre) bekommt keinen Anteil
             if st.get("err") or st.get("backoff"):
                 if DEBUG_WEIGHTS and CALC_LOG:
@@ -3396,6 +3662,7 @@ class PVControlApp(Hass):
                 old     = int(self.last_distribution.get(name, 0))
                 desired = int(distribution.get(name, 0))
                 driver  = self._drivers.get(name)
+                self._stuck61_check(name, st, effective_mode, old, mn, mx, write_logs)  # FIX 61
 
                 if effective_mode == "discharge" and self._bms_battery_block_discharge(name):
                     desired = 0
@@ -3508,6 +3775,7 @@ class PVControlApp(Hass):
                     if _src_map:
                         _src_info = " | ".join(f"{n}={s}" for n, s in _src_map.items())
                         self.log(f"GERAETE-IDs: {_src_info}")
+                        self._devid62_save(_src_map)  # FIX 62
                     self.log("=== PVCONTROL TABLE BEGIN ===")
                     self.log(self.header_line)
                     self.log(self.sep_line)
@@ -3534,6 +3802,8 @@ class PVControlApp(Hass):
 
                         if st.get("disabled"):
                             zustand_txt = "AUS (Schalter)"
+                        elif float((getattr(self, '_stuck61', {}).get(name) or {}).get('until') or 0) > time.time():  # FIX 61
+                            zustand_txt = "STOERUNG kein Anteil"
                         elif bms_obj.get("safety_active"):
                             zustand_txt = "Laden - SOC-SAFETY"
                         elif bms_phase in ("charging", "hold"):

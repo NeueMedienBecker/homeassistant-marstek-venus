@@ -3369,6 +3369,20 @@
            "name": "Batterie anlegen",
            "action_name": "Anlegen",
            "icon": "mdi:battery-plus"
+          },
+          {
+           "type": "section",
+           "label": "Batterie nicht mehr erreichbar?"
+          },
+          {
+           "entity": "button.marstek_rescan",
+           "name": "Batterien im Netz neu suchen",
+           "action_name": "Suchen",
+           "icon": "mdi:magnify-scan"
+          },
+          {
+           "entity": "sensor.marstek_admin_status",
+           "name": "Ergebnis"
           }
          ]
         }
@@ -3379,7 +3393,7 @@
        "grid_options": {
         "columns": "full"
        },
-       "content": "<details><summary>ℹ️ <b>Wie lege ich eine Batterie an?</b></summary>\n\n1. **Anbindung** wählen: **modbus** = über einen RS485-LAN-Adapter (wie Venus 1–4), **api** = direkt über WLAN.\n2. Bei *modbus* nur die **IP des RS485-LAN-Adapters** eintragen (Port meist **502**). Die **Slave-ID auf 0** lassen: Das Script sucht sie dann selbst (probiert 1–32, dauert höchstens ca. 15 s) und prüft dabei, ob wirklich eine Batterie antwortet. Hängen mehrere Batterien an einem Adapter, werden schon vergebene IDs übersprungen. Nur wenn die ID bekannt ist, kann sie auch fest eingetragen werden – sie wird dann vor dem Anlegen geprüft.\n   Bei *api* die **WLAN-IP der Batterie** eintragen.\n3. Kapazität, max. Lade-/Entladeleistung und Min/Max-SoC prüfen (Vorgaben passen für eine Venus E).\n4. **Anlegen** drücken. Die Batterie bekommt automatisch den nächsten freien Namen (z. B. battery5), das Script startet neu und regelt sie mit.\n\nIst etwas falsch (ungültige IP, Adapter nicht erreichbar, keine Batterie gefunden, Adresse schon vergeben, Min ≥ Max), steht der Grund oben bei **Status** – es wird dann nichts geändert.\n\n**Hinweis:** Die Anzeigen auf den Tabs *Übersicht* und *Batterien* für Venus 5/6 erscheinen erst, wenn die Batterie auch in Home Assistant als Modbus-Gerät eingetragen ist (`sensor.marstekvenus_5_…`). Die Regelung selbst funktioniert auch ohne.\n</details>"
+       "content": "<details><summary>ℹ️ <b>Wie lege ich eine Batterie an?</b></summary>\n\n1. **Anbindung** wählen: **modbus** = über einen RS485-LAN-Adapter (wie Venus 1–4), **api** = direkt über WLAN.\n2. Bei *modbus* nur die **IP des RS485-LAN-Adapters** eintragen (Port meist **502**). Die **Slave-ID auf 0** lassen: Das Script sucht sie dann selbst (probiert 1–32, dauert höchstens ca. 15 s) und prüft dabei, ob wirklich eine Batterie antwortet. Hängen mehrere Batterien an einem Adapter, werden schon vergebene IDs übersprungen. Nur wenn die ID bekannt ist, kann sie auch fest eingetragen werden – sie wird dann vor dem Anlegen geprüft.\n   Bei *api* die **WLAN-IP der Batterie** eintragen.\n3. Kapazität, max. Lade-/Entladeleistung und Min/Max-SoC prüfen (Vorgaben passen für eine Venus E).\n4. **Anlegen** drücken. Die Batterie bekommt automatisch den nächsten freien Namen (z. B. battery5), das Script startet neu und regelt sie mit.\n\nIst etwas falsch (ungültige IP, Adapter nicht erreichbar, keine Batterie gefunden, Adresse schon vergeben, Min ≥ Max), steht der Grund oben bei **Status** – es wird dann nichts geändert.\n\n**Hinweis:** Die Anzeigen auf den Tabs *Übersicht* und *Batterien* für Venus 5/6 erscheinen erst, wenn die Batterie auch in Home Assistant als Modbus-Gerät eingetragen ist (`sensor.marstekvenus_5_…`). Die Regelung selbst funktioniert auch ohne.\n\n- **Batterien im Netz neu suchen:** Ist eine Batterie nicht mehr erreichbar (z. B. nach Stromausfall oder neuem Router bekommt sie eine andere IP-Adresse), sucht diese Taste das Netz ab: **WLAN-Batterien** werden an ihrer Gerätekennung erkannt, **RS485-LAN-Adapter** an den Energiezählern der Batterie. Gefundene neue Adressen werden automatisch eingetragen; das Ergebnis steht bei *Status*. Wird ein Adapter gar nicht gefunden, ist er meist ausgeschaltet oder hängt – kurz vom Strom nehmen und erneut suchen.\n</details>"
       },
       {
        "type": "entities",

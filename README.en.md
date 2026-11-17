@@ -213,6 +213,8 @@ stored in *pv_mqtt_overrides.json*, added batteries in *pv_batteries.json*, MQTT
 
 **Switching off = back to Marstek:** If the main switch *Regelung aktiv* or *Venus X vom Script gesteuert* is turned off, the battery is stopped and handed back to Marstek (Modbus: RS485 control off, WLAN: Auto mode). It can then be operated in the Marstek app, e.g. charged manually. Turned on again = the script takes over again. Only let **one** program control a battery via Modbus (no second Modbus integration in parallel).
 
+**Battery no longer reachable?** Under *Konfiguration → Verwaltung* the button **"Batterien im Netz neu suchen"** finds batteries and RS485-LAN adapters that got a new IP address and enters it. If a battery does not follow its commands for a while, it temporarily gets no share – the others take over, and Home Assistant shows a notification.
+
 **Emergency charge:** Under *Konfiguration → SoC-Schutz / Notladung* you can set how long a battery may stay below min SoC before it is recharged ("Wartezeit unter Min-SoC", 0 = immediately, default 24 h).
 
 **Updates:** The control checks GitHub every 6 hours. If there is a new version, the *Übersicht* view shows a hint with the version and the install command; the list of changes can be expanded there (also under *Settings → Updates*). Install it with the install command - all settings are kept.

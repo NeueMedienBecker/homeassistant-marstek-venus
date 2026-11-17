@@ -810,6 +810,14 @@ CONTROL_DISABLED_VALUES = {21947, 0}
 # False = altes Verhalten (nur einmal STOP, Steuerung bleibt beim Script).
 RELEASE_ON_DISABLE = True
 
+# FIX 61: Setzt eine Batterie ihren Lade-/Entlade-Sollwert (ab STUCK_MIN_W) laenger als STUCK_AFTER_S nicht um
+# (liefert < 20 % davon, z. B. Adapter weg oder API lehnt Befehle ab), bekommt sie in dieser Richtung STUCK_RETRY_S
+# lang keinen Anteil mehr - die anderen Batterien uebernehmen. Meldung in Home Assistant (Benachrichtigung).
+STUCK_DETECT_ENABLE = True
+STUCK_MIN_W = 200
+STUCK_AFTER_S = 300
+STUCK_RETRY_S = 1800
+
 
 # =============================================================================
 # 16. Smartmeter / Netz-Zaehler

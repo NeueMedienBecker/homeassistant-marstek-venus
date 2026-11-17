@@ -54,7 +54,7 @@ DEVICE = {
     "name": "Marstek Steuerung",
     "manufacturer": "AppDaemon",
     "model": "pv_control.py",
-    "sw_version": "2.0.28",
+    "sw_version": "2.0.29",
 }
 MAX_BATTERY_SLOTS = 8
 # FIX 31: Anbindung je Batterie - Texte muessen zu COMM_CHOICES in pv_control.py passen
@@ -140,6 +140,7 @@ BUTTONS = [
     ("factory_reset",    "Werksreset (2x druecken)",         "mdi:factory",           "config"),
     ("add_battery",      "Neue Batterie anlegen",            "mdi:battery-plus",      "config"),
     ("delete_battery",   "Batterie loeschen (2x druecken)",  "mdi:battery-remove",    "config"),
+    ("rescan",           "Batterien im Netz neu suchen",     "mdi:magnify-scan",      "config"),  # FIX 62
 ]
 RESET_KEY = "reset_overrides"
 CONFIRM_S = 15
@@ -515,6 +516,9 @@ class ParamBridge:
                 if self._confirmed(key, "Werksreset"):
                     self._queue("factory_reset")
                 return
+            if key == "rescan":  # FIX 62
+                self._queue("rescan")
+                return
             if key == "add_battery":
                 self._queue("add_battery")
                 return
@@ -541,6 +545,28 @@ class ParamBridge:
             self.log(f"{key} -> {val} (ab naechstem Zyklus)")
         except Exception as e:
             self.log(f"Befehl {msg.topic}={msg.payload!r} ungueltig: {e}")
+
+    def set_value(self, key, raw):
+        """FIX 62: Wert wie aus dem Dashboard setzen (z. B. neue IP nach 'Neu suchen')."""
+        if key not in self.spec:
+            return False
+        val = self._validate(key, raw)
+        with self.lock:
+            self.pending[key] = val
+        if val == self.defaults.get(key):
+            self.overrides.pop(key, None)
+        else:
+            self.overrides[key] = val
+        self._save_overrides()
+        self._publish_state(key, val)
+        self._publish_overrides()
+        self.log(f"{key} -> {val} (Neu suchen)")
+        return True
+
+    def _do_rescan(self):
+        """FIX 62: Suche im Hintergrund starten (blockiert die Regelung nicht)."""
+        if not hasattr(self.app, 'start_rescan') or not self.app.start_rescan():
+            self._set_status('Suche laeuft bereits ...')
 
     def _queue(self, action):
         with self.lock:

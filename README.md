@@ -230,6 +230,8 @@ stehen in *pv_mqtt_overrides.json*, angelegte Batterien in *pv_batteries.json*, 
 
 **Ausschalten = zurück an Marstek:** Wird der Hauptschalter *Regelung aktiv* oder *Venus X vom Script gesteuert* ausgeschaltet, wird die Batterie gestoppt und an Marstek zurückgegeben (Modbus: RS485-Steuerung aus, WLAN: Modus Automatik). Sie lässt sich dann in der Marstek-App bedienen, z. B. von Hand laden. Wieder an = das Script übernimmt wieder. Bitte pro Batterie nur **ein** Programm per Modbus steuern lassen (keine zweite Modbus-Integration parallel).
 
+**Batterie nicht mehr erreichbar?** Unter *Konfiguration → Verwaltung* sucht die Taste **„Batterien im Netz neu suchen“** Batterien und RS485-LAN-Adapter, die eine neue IP-Adresse bekommen haben, und trägt sie ein. Setzt eine Batterie ihre Befehle länger nicht um, bekommt sie vorläufig keinen Anteil – die anderen übernehmen, und Home Assistant zeigt eine Benachrichtigung.
+
 **Notladung:** Unter *Konfiguration → SoC-Schutz / Notladung* lässt sich einstellen, wie lange eine Batterie unter dem Min-SoC sein darf, bevor nachgeladen wird („Wartezeit unter Min-SoC“, 0 = sofort, Standard 24 h).
 
 **Updates:** Die Steuerung prüft alle 6 Stunden, ob es auf GitHub eine neue Version gibt. Dann erscheint in der *Übersicht* ein Hinweis mit Version und Installationsbefehl; die Neuerungen lassen sich dort aufklappen (zusätzlich unter *Einstellungen → Updates*). Eingespielt wird mit dem Installationsbefehl – alle Einstellungen bleiben erhalten.

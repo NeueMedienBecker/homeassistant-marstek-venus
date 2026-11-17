@@ -1742,6 +1742,441 @@ def fix60_control(src):
     return out
 
 
+def fix61_control(src):
+    """FIX 61: Setzt eine Batterie ihren Lade-/Entlade-Sollwert laenger nicht um (z. B. Adapter weg, API lehnt ab),
+    bekommt sie in dieser Richtung keinen Anteil mehr; die anderen uebernehmen. Erneuter Versuch nach STUCK_RETRY_S."""
+    if "FIX 61" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 60:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 61: Batterie, die ihren Sollwert laenger als STUCK_AFTER_S nicht umsetzt, bekommt in dieser Richtung "
+                                "keinen Anteil mehr (andere uebernehmen), Meldung in HA; neuer Versuch nach STUCK_RETRY_S.")
+    # (1) Verteilung: haengende Batterie ueberspringen
+    i = find(L, "# FIX 30: nicht erreichbare Batterie (Lesefehler/Sperre) bekommt keinen Anteil")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "_s61 = getattr(self, '_stuck61', {}).get(n)  # FIX 61: setzt Sollwert nicht um -> vorlaeufig kein Anteil",
+        b + "if _s61 and _s61.get('mode') == effective_mode and float(_s61.get('until') or 0) > time.time():",
+        b + "    if DEBUG_WEIGHTS and CALC_LOG:",
+        b + "        self.log(f\"{n}: skip {effective_mode} (setzt Sollwert nicht um, neuer Versuch spaeter)\")",
+        b + "    continue",
+    ]
+    # (2) Erkennung im Schreib-Teil
+    i = find(L, "driver  = self._drivers.get(name)")
+    assert L[i - 1].strip() == "desired = int(distribution.get(name, 0))"
+    b = ind(L[i])
+    L[i + 1:i + 1] = [
+        b + "self._stuck61_check(name, st, effective_mode, old, mn, mx, write_logs)  # FIX 61",
+    ]
+    # (3) Hilfsmethode + Anzeige im Verbindungs-Sensor
+    i = find(L, "def _export_driver_state(self, name):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def _stuck61_check(self, name, st, mode, old, mn, mx, write_logs):",
+        b + "    \"\"\"FIX 61: Sollwert (old) gegen gemessene Leistung pruefen; nach STUCK_AFTER_S ohne Umsetzung sperren.\"\"\"",
+        b + "    if not globals().get('STUCK_DETECT_ENABLE', True) or globals().get('READ_ONLY', False):",
+        b + "        return",
+        b + "    now = time.time()",
+        b + "    d = self.__dict__.setdefault('_stuck61', {})",
+        b + "    rec = d.get(name)",
+        b + "    if rec and rec.get('until'):",
+        b + "        if now >= float(rec['until']):",
+        b + "            d.pop(name, None)  # Sperre abgelaufen -> neuer Versuch",
+        b + "            write_logs.append(f\"{name}: neuer Versuch - bekommt wieder einen Anteil\")",
+        b + "            self._export_driver_state(name)",
+        b + "        return",
+        b + "    try:",
+        b + "        ac = float(st.get('ac', 0) or 0)  # ac > 0 = Entladen, ac < 0 = Laden",
+        b + "        soc = int(st.get('soc', 0))",
+        b + "    except (TypeError, ValueError):",
+        b + "        return",
+        b + "    lim = float(globals().get('STUCK_MIN_W', 200))",
+        b + "    bad = False",
+        b + "    if mode == 'discharge' and old >= lim and soc > mn + 2:",
+        b + "        bad = ac < max(50.0, 0.2 * old)",
+        b + "    elif mode == 'charge' and old >= lim and soc < mx - 2:",
+        b + "        bad = -ac < max(50.0, 0.2 * old)",
+        b + "    if not bad:",
+        b + "        if rec:",
+        b + "            d.pop(name, None)",
+        b + "        return",
+        b + "    if not rec or rec.get('mode') != mode:",
+        b + "        d[name] = {'since': now, 'mode': mode}",
+        b + "        return",
+        b + "    if now - float(rec['since']) < float(globals().get('STUCK_AFTER_S', 300)):",
+        b + "        return",
+        b + "    retry = float(globals().get('STUCK_RETRY_S', 1800))",
+        b + "    rec['until'] = now + retry",
+        b + "    txt = ('Entladen' if mode == 'discharge' else 'Laden')",
+        b + "    msg = (f\"{name}: setzt den Sollwert ({txt} {int(old)} W) seit {int((now - float(rec['since'])) // 60)} min nicht um \"",
+        b + "           f\"(gemessen {int(ac)} W) - bekommt {int(retry // 60)} min keinen Anteil, die anderen Batterien uebernehmen\")",
+        b + "    self.log('STOERUNG: ' + msg, level='WARNING')",
+        b + "    write_logs.append(msg)",
+        b + "    self._export_driver_state(name)",
+        b + "    try:",
+        b + "        idx = BATTERY_META.get(name, {}).get('idx', name)",
+        b + "        self.call_service('persistent_notification/create', notification_id=f'marstek_stuck_{name}',",
+        b + "                          title=f'Marstek: Venus {idx} setzt Befehle nicht um',",
+        b + "                          message=(f'Venus {idx} sollte {txt.lower()} ({int(old)} W), liefert aber {int(ac)} W. '",
+        b + "                                   f'Sie bekommt vorlaeufig keinen Anteil, die anderen Batterien uebernehmen. '",
+        b + "                                   f'Bitte Verbindung pruefen (RS485-Adapter / WLAN, Open API in der Marstek-App) oder im Dashboard unter Verwaltung „Batterien im Netz neu suchen“ druecken. '",
+        b + "                                   f'Neuer Versuch in {int(retry // 60)} min.'))",
+        b + "    except Exception:",
+        b + "        pass",
+        "",
+    ]
+    i = find(L, '"retry_in_min": max(0, int((fb.get("retry_at", 0) - time.time()) / 60)),')
+    b = ind(L[i])
+    L.insert(i + 1, b + "\"stoerung\": ((lambda _r: (f\"setzt Sollwert nicht um - kein Anteil bis \" + time.strftime('%H:%M', time.localtime(float(_r['until'])))) "
+                        "if _r and _r.get('until') else '-')(getattr(self, '_stuck61', {}).get(name))),  # FIX 61")
+    # (4) Tabelle im Log
+    i = find(L, 'zustand_txt = "AUS (Schalter)"')
+    b = ind(L[i - 1])
+    L[i + 1:i + 1] = [
+        b + "elif float((getattr(self, '_stuck61', {}).get(name) or {}).get('until') or 0) > time.time():  # FIX 61",
+        b + "    zustand_txt = \"STOERUNG kein Anteil\"",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix61_config(src):
+    if "FIX 61" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "RELEASE_ON_DISABLE = True")
+    L[i + 1:i + 1] = [
+        "",
+        "# FIX 61: Setzt eine Batterie ihren Lade-/Entlade-Sollwert (ab STUCK_MIN_W) laenger als STUCK_AFTER_S nicht um",
+        "# (liefert < 20 % davon, z. B. Adapter weg oder API lehnt Befehle ab), bekommt sie in dieser Richtung STUCK_RETRY_S",
+        "# lang keinen Anteil mehr - die anderen Batterien uebernehmen. Meldung in Home Assistant (Benachrichtigung).",
+        "STUCK_DETECT_ENABLE = True",
+        "STUCK_MIN_W = 200",
+        "STUCK_AFTER_S = 300",
+        "STUCK_RETRY_S = 1800",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_config.py", "exec")
+    return out
+
+
+RESCAN_METHODS = r"""
+    # ---- FIX 62: Batterien im Netz neu suchen ------------------------------------------------
+    def _devid62_file(self):
+        return os.path.join(os.path.dirname(os.path.abspath(__file__)), 'pv_devices.json')
+
+    def _devid62_load(self):
+        try:
+            with open(self._devid62_file(), encoding='utf-8') as fh:
+                return dict(json.load(fh) or {})
+        except Exception:
+            return {}
+
+    def _devid62_save(self, src_map):
+        # Geraete-Kennung (API 'src', z. B. VenusE-009b0805fa17) je Batterie merken - auch fuer spaeter.
+        cur = self._devid62_load()
+        new = dict(cur)
+        new.update({k: v for k, v in (src_map or {}).items() if v})
+        if new != cur:
+            try:
+                with open(self._devid62_file() + '.tmp', 'w', encoding='utf-8') as fh:
+                    json.dump(new, fh)
+                os.replace(self._devid62_file() + '.tmp', self._devid62_file())
+            except Exception as ex:
+                self.log(f'NEU SUCHEN: pv_devices.json nicht gespeichert: {ex}', level='WARNING')
+
+    def start_rescan(self):
+        if getattr(self, '_rescan62_busy', False):
+            return False
+        self._rescan62_busy = True
+        threading.Thread(target=self._rescan62_run, name='rescan', daemon=True).start()
+        return True
+
+    def _rescan62_status(self, txt):
+        br = getattr(self, '_mqtt_bridge', None)
+        if br is not None:
+            try:
+                br._set_status(txt)
+                return
+            except Exception:
+                pass
+        self.log('NEU SUCHEN: ' + txt)
+
+    def _rescan62_tcp(self, ip, port=502, timeout=0.8):
+        s_ = socket.socket()
+        s_.settimeout(timeout)
+        try:
+            s_.connect((ip, int(port)))
+            return True
+        except Exception:
+            return False
+        finally:
+            s_.close()
+
+    def _rescan62_run(self):
+        import concurrent.futures as _cf
+        try:
+            self._rescan62_status('Suche im Netz laeuft (ca. 30 s) ...')
+            msgs = []
+            bats = dict(self.batteries)
+            bases = []
+            for c in bats.values():
+                for k in ('api_host', 'modbus_host', 'host'):
+                    ip = str(c.get(k) or '')
+                    if ip.count('.') == 3:
+                        b = '.'.join(ip.split('.')[:3])
+                        if b not in bases:
+                            bases.append(b)
+            bases = bases[:2]
+            # --- 1) WLAN / Open API: Marstek.GetDevice an alle Adressen, Antworten ueber den gemeinsamen Socket
+            ids = self._devid62_load()
+            for n, d in self._drivers.items():
+                if isinstance(d, ApiDriver) and getattr(d, '_device_src', ''):
+                    ids[n] = d._device_src
+            found = {}
+            hub = None
+            try:
+                hub = _ApiHub.get(int(globals().get('API_LOCAL_PORT', 30000)), self.log)
+                try:
+                    hub.sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                except OSError:
+                    pass
+                hub.sniff = []
+                raw = json.dumps({'id': 62, 'method': 'Marstek.GetDevice', 'params': {'ble_mac': '0'}}).encode()
+                known = set(hub.queues.keys())
+                targets = ['255.255.255.255'] + [f'{b}.{i}' for b in bases for i in range(1, 255)]
+                for _r in range(2):
+                    for ip in targets:
+                        if ip in known:
+                            continue
+                        try:
+                            hub.send(raw, ip, int(globals().get('API_UDP_PORT', 30000)))
+                        except OSError:
+                            pass
+                        time.sleep(0.004)
+                    time.sleep(2.0)
+                for pkt, ip in list(hub.sniff or []):
+                    try:
+                        dd = json.loads(pkt.decode('utf-8', errors='replace'))
+                    except ValueError:
+                        continue
+                    res = dd.get('result') or {}
+                    src = dd.get('src') or (f"{res.get('device')}-{res.get('ble_mac')}" if res.get('device') else '')
+                    if src:
+                        found[ip] = src
+            finally:
+                if hub is not None:
+                    hub.sniff = None
+            # Batterien ueber die API-Kennung zuordnen
+            for n, c in bats.items():
+                want = ids.get(n)
+                if not want:
+                    continue
+                for ip, src in found.items():
+                    if src == want and ip != str(c.get('api_host') or ''):
+                        self._rescan62_apply(n, '_API_HOST', ip)
+                        msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: WLAN-IP {c.get('api_host')} -> {ip}")
+            # --- 2) Modbus: Adapter, die nicht mehr antworten, im Netz suchen (Port 502) und ueber die Zaehler zuordnen
+            lost = [n for n, c in bats.items()
+                    if (c.get('modbus_host') or c.get('host'))
+                    and not self._rescan62_tcp(str(c.get('modbus_host') or c.get('host')), c.get('port', 502))]
+            if lost and bases:
+                used = {str(c.get('modbus_host') or c.get('host')) for n, c in bats.items() if n not in lost}
+                cand_ips = [f'{b}.{i}' for b in bases for i in range(1, 255)]
+                with _cf.ThreadPoolExecutor(64) as ex:
+                    open502 = [ip for ip, ok in zip(cand_ips, ex.map(self._rescan62_tcp, cand_ips)) if ok and ip not in used]
+                for ip in open502:
+                    tot = self._rescan62_mb_totals(ip)
+                    if not tot:
+                        continue
+                    for n in list(lost):
+                        ref = self._rescan62_ref_totals(n)
+                        if ref and all(abs(a - b) <= max(0.5, 0.005 * b) for a, b in zip(tot, ref)):
+                            self._rescan62_apply(n, '_MODBUS_HOST', ip)
+                            msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN-Adapter "
+                                        f"{bats[n].get('modbus_host') or bats[n].get('host')} -> {ip}")
+                            lost.remove(n)
+                            break
+            for n in lost:
+                if (getattr(self, '_comm_fallback', {}).get(n, {}) or {}).get('primary_mode', 'modbus') != 'modbus':
+                    continue  # Modbus ist bei dieser Batterie nur Ausweichweg -> keine Meldung
+                if not any(m.startswith(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN") for m in msgs):
+                    msgs.append(f"Venus {BATTERY_META.get(n, {}).get('idx', n)}: LAN-Adapter "
+                                f"{bats[n].get('modbus_host') or bats[n].get('host')} nicht gefunden (Strom/Kabel pruefen)")
+            other = [f'{ip} ({src})' for ip, src in found.items() if src not in ids.values()]
+            if other:
+                msgs.append('weitere Marstek im Netz: ' + ', '.join(other[:4]))
+            txt = '; '.join(msgs) if msgs else 'alle Batterien unter den eingetragenen Adressen gefunden'
+            self._rescan62_status('Suche fertig: ' + txt)
+            self.log('NEU SUCHEN: ' + txt)
+        except Exception as ex:
+            self._rescan62_status(f'Suche fehlgeschlagen: {ex}')
+        finally:
+            self._rescan62_busy = False
+
+    def _rescan62_mb_totals(self, ip):
+        # Gesamt-Energiezaehler (geladen, entladen) eines Adapters per Modbus lesen, in kWh.
+        drv = None
+        try:
+            drv = _get_driver('rescan', {'comm_mode': 'modbus', 'modbus_host': ip, 'port': 502, 'unit': 1},
+                              self.log, self.log, REGISTERS, MB_TIMEOUT_S, MB_RETRIES,
+                              CONTROL_ENABLED_VALUES, CONTROL_ENABLE_CANDIDATES,
+                              AC_SIGN_INVERT, False, False)
+            cl = drv._mk_client()
+            if not cl.connect():
+                return None
+            regs = drv._read(cl, 33000, 4)
+            if not regs or len(regs) < 4:
+                return None
+            return ((regs[0] << 16 | regs[1]) * 0.01, (regs[2] << 16 | regs[3]) * 0.01)
+        except Exception:
+            return None
+        finally:
+            if drv is not None:
+                try:
+                    drv._drop_client()
+                except Exception:
+                    pass
+
+    def _rescan62_ref_totals(self, name):
+        # Letzte bekannte Zaehlerstaende (geladen, entladen) dieser Batterie in kWh.
+        out = []
+        last = getattr(self, '_kwh_last', {}) or {}
+        for key in ('total_charging_energy', 'total_discharging_energy'):
+            ent = self._ha_entity(name, key)
+            v = None
+            if ent in last:
+                v = float(last[ent][0])
+            else:
+                try:
+                    v = float(self.get_state(ent))
+                except Exception:
+                    v = None
+            if v is None or v <= 1:
+                return None
+            out.append(v)
+        return tuple(out)
+
+    def _rescan62_apply(self, name, suffix, ip):
+        key = name.upper() + suffix
+        br = getattr(self, '_mqtt_bridge', None)
+        if br is not None and hasattr(br, 'set_value') and br.set_value(key, ip):
+            return
+        globals()[key] = ip
+"""
+
+
+def fix62_control(src):
+    """FIX 62: 'Batterien im Netz neu suchen' (Taste in der Verwaltung)."""
+    if "FIX 62" in src:
+        return src
+    L = src.split("\n")
+    i = find(L, "- FIX 61:", startswith=True)
+    L.insert(i + 1, ind(L[i]) + "- FIX 62: Taste 'Batterien im Netz neu suchen': findet WLAN-Batterien (ueber ihre Geraete-Kennung) und "
+                                "RS485-LAN-Adapter (ueber die Energiezaehler) unter neuer IP und traegt sie ein.")
+    # Hub: Antworten unbekannter Absender waehrend der Suche sammeln
+    i = find(L, "self.queues = {}")
+    L.insert(i + 1, ind(L[i]) + "self.sniff = None  # FIX 62: waehrend 'Neu suchen' Antworten unbekannter Absender sammeln")
+    i = find(L, "q = self.queues.get(src[0])")
+    assert L[i + 1].strip() == "if q is not None:" and L[i + 2].strip() == "q.put((pkt, time.time()))"
+    b = ind(L[i + 1])
+    L[i + 3:i + 3] = [b + "elif self.sniff is not None:  # FIX 62",
+                      b + "    self.sniff.append((pkt, src[0]))"]
+    # Methoden vor _export_driver_state
+    i = find(L, "def _export_driver_state(self, name):")
+    L[i:i] = RESCAN_METHODS.strip("\n").split("\n") + [""]
+    # Geraete-Kennungen merken
+    i = find(L, 'self.log(f"GERAETE-IDs: {_src_info}")')
+    L.insert(i + 1, ind(L[i]) + "self._devid62_save(_src_map)  # FIX 62")
+    out = "\n".join(L)
+    compile(out, "pv_control.py", "exec")
+    return out
+
+
+def fix62_mqtt(src):
+    if '"rescan"' in src:
+        return src
+    L = src.split("\n")
+    i = find(L, '("delete_battery",', startswith=True)
+    L.insert(i + 1, ind(L[i]) + '("rescan",           "Batterien im Netz neu suchen",     "mdi:magnify-scan",      "config"),  # FIX 62')
+    i = find(L, 'if key == "add_battery":')
+    b = ind(L[i])
+    L[i:i] = [b + 'if key == "rescan":  # FIX 62',
+              b + '    self._queue("rescan")',
+              b + '    return']
+    i = find(L, "def _queue(self, action):")
+    b = ind(L[i])
+    L[i:i] = [
+        b + "def set_value(self, key, raw):",
+        b + "    \"\"\"FIX 62: Wert wie aus dem Dashboard setzen (z. B. neue IP nach 'Neu suchen').\"\"\"",
+        b + "    if key not in self.spec:",
+        b + "        return False",
+        b + "    val = self._validate(key, raw)",
+        b + "    with self.lock:",
+        b + "        self.pending[key] = val",
+        b + "    if val == self.defaults.get(key):",
+        b + "        self.overrides.pop(key, None)",
+        b + "    else:",
+        b + "        self.overrides[key] = val",
+        b + "    self._save_overrides()",
+        b + "    self._publish_state(key, val)",
+        b + "    self._publish_overrides()",
+        b + "    self.log(f\"{key} -> {val} (Neu suchen)\")",
+        b + "    return True",
+        "",
+        b + "def _do_rescan(self):",
+        b + "    \"\"\"FIX 62: Suche im Hintergrund starten (blockiert die Regelung nicht).\"\"\"",
+        b + "    if not hasattr(self.app, 'start_rescan') or not self.app.start_rescan():",
+        b + "        self._set_status('Suche laeuft bereits ...')",
+        "",
+    ]
+    out = "\n".join(L)
+    compile(out, "pv_mqtt.py", "exec")
+    return out
+
+
+RESCAN_HELP = ("\n- **Batterien im Netz neu suchen:** Ist eine Batterie nicht mehr erreichbar (z. B. nach Stromausfall oder "
+               "neuem Router bekommt sie eine andere IP-Adresse), sucht diese Taste das Netz ab: **WLAN-Batterien** werden an ihrer "
+               "Gerätekennung erkannt, **RS485-LAN-Adapter** an den Energiezählern der Batterie. Gefundene neue Adressen werden "
+               "automatisch eingetragen; das Ergebnis steht bei *Status*. Wird ein Adapter gar nicht gefunden, ist er meist "
+               "ausgeschaltet oder hängt – kurz vom Strom nehmen und erneut suchen.")
+
+
+def fix62_dashboard(cfg):
+    """FIX 62: Verwaltung: Taste 'Batterien im Netz neu suchen' + Hilfe."""
+    if "button.marstek_rescan" in json.dumps(cfg, ensure_ascii=False):
+        return cfg
+    hits = {"btn": 0, "help": 0}
+
+    def walk(o):
+        if isinstance(o, dict):
+            if isinstance(o.get("entities"), list):
+                new = []
+                for r in o["entities"]:
+                    new.append(r)
+                    if isinstance(r, dict) and r.get("entity") == "button.marstek_add_battery" and not hits["btn"]:
+                        new += [{"type": "section", "label": "Batterie nicht mehr erreichbar?"},
+                                {"entity": "button.marstek_rescan", "name": "Batterien im Netz neu suchen",
+                                 "action_name": "Suchen", "icon": "mdi:magnify-scan"},
+                                {"entity": "sensor.marstek_admin_status", "name": "Ergebnis"}]
+                        hits["btn"] += 1
+                o["entities"] = new
+            c = o.get("content")
+            if isinstance(c, str) and "Wie lege ich eine Batterie an?" in c and "</details>" in c and not hits["help"]:
+                k = c.rindex("</details>")
+                o["content"] = c[:k].rstrip("\n") + "\n" + RESCAN_HELP + "\n" + c[k:]
+                hits["help"] += 1
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, list):
+            for it in o:
+                walk(it)
+    walk(cfg)
+    assert hits["btn"] == 1 and hits["help"] == 1, hits
+    return cfg
+
+
 def fix42_control(src):
     """FIX 42: Sensoren geloeschter Batterien beim Start aus Home Assistant entfernen."""
     if "FIX 42" in src:
@@ -2004,12 +2439,12 @@ def build_dashboard(cfg):
 def apply_fix40_repo():
     """Nur FIX 40 auf die Dateien im Repo anwenden (ohne Neuaufbau aus der Live-Installation)."""
     dst = os.path.join(REPO, "apps", "marstek_venus")
-    for fn, f in (("pv_control.py", lambda t: fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))))))), ("pv_mqtt.py", lambda t: fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t)))))))),
-                  ("pv_config.py", lambda t: fix56_config(fix53_config(fix50_config(fix40_config(t)))))):
+    for fn, f in (("pv_control.py", lambda t: fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(t))))))))))))))))))), ("pv_mqtt.py", lambda t: fix62_mqtt(fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(t))))))))),
+                  ("pv_config.py", lambda t: fix61_config(fix56_config(fix53_config(fix50_config(fix40_config(t))))))):
         p = os.path.join(dst, fn)
         wr(p, f(rd(p)))
     p = os.path.join(REPO, "dashboard", "marstek_dashboard.json")
-    wr(p, json.dumps(fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p))))))))))))))), ensure_ascii=False, indent=1) + "\n")
+    wr(p, json.dumps(fix62_dashboard(fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(json.loads(rd(p)))))))))))))))), ensure_ascii=False, indent=1) + "\n")
     print("FIX 40 OK")
 
 
@@ -2023,12 +2458,12 @@ def main():
     a = ap.parse_args()
     dst = os.path.join(REPO, "apps", "marstek_venus")
     wr(os.path.join(dst, "pv_control.py"),
-       fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))))))
-    wr(os.path.join(dst, "pv_mqtt.py"), fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version)))))))))
-    wr(os.path.join(dst, "pv_config.py"), fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py"))))))))
+       fix62_control(fix61_control(fix60_control(fix59_control(fix58_control(fix56_control(fix55_control(fix53_control(fix50_control(fix49_control(fix48_control(fix47_control(fix46_control(fix45_control(fix44_control(fix43_control(fix42_control(fix40_control(build_control(rd(os.path.join(a.live, "pv_control.py")), a.version))))))))))))))))))))
+    wr(os.path.join(dst, "pv_mqtt.py"), fix62_mqtt(fix56_mqtt(fix52_mqtt(fix50_mqtt(fix48_mqtt(fix47_mqtt(fix46_mqtt(fix40_mqtt(build_mqtt(rd(os.path.join(a.live, "pv_mqtt.py")), a.version))))))))))
+    wr(os.path.join(dst, "pv_config.py"), fix61_config(fix56_config(fix53_config(fix50_config(fix40_config(build_config(rd(os.path.join(a.live, "pv_config.py")))))))))
     raw = json.loads(rd(a.dashboard))
     cfg, rest = build_dashboard(raw["data"]["config"] if "data" in raw else raw)
-    cfg = fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg)))))))))))))
+    cfg = fix62_dashboard(fix57_dashboard(fix56_dashboard(fix55_dashboard(fix53_dashboard(fix52_dashboard(fix51_dashboard(fix50_dashboard(fix48_dashboard(fix47_dashboard(fix46_dashboard(fix45_dashboard(fix41_dashboard(fix40_dashboard(cfg))))))))))))))
     wr(os.path.join(REPO, "dashboard", "marstek_dashboard.json"), json.dumps(cfg, ensure_ascii=False, indent=1) + "\n")
     wr(os.path.join(REPO, "VERSION"), a.version + "\n")
     print("OK - Rest-Hinweise im Dashboard:", rest or "keine")
